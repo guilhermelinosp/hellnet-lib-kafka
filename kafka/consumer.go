@@ -35,6 +35,7 @@ func NewConsumer[T Message](h Handler[T], spec HandlerSpec, opts ...Options) (*C
 	if h == nil {
 		return nil, fmt.Errorf("kafka: handler is nil")
 	}
+	loadEnvFiles()
 	o := LoadFromEnv()
 	if len(opts) > 0 {
 		o = opts[0]
