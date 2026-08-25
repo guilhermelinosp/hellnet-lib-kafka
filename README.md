@@ -9,11 +9,11 @@
 | Hellnet.Kafka (.NET) | hellnet-lib-kafka (Go) |
 |---|---|
 | `IMessage.MessageType` | `Message.MessageType() string` |
-| `IMessageBus.PublishAsync` | `Bus.Publish(ctx, msg)` |
+| `IMessageBus.PublishAsync` | `Bus.Publish(msg)` / `PublishContext(ctx, msg)` |
 | `IMessageHandler<T>.HandleAsync` | `Handler[T].Handle(ctx, msg, Ctx)` |
 | `IMessageContext` | `Ctx{Topic, Partition, Offset, Key}` |
 | `MessageHandlerAttribute` | `HandlerSpec{Topic, Group, MaxRetries}` |
-| `AddHellnetKafka()` (DI) | `kafka.New()` / `kafka.OptionsFromEnv()` |
+| `AddHellnetKafka()` (DI) | `kafka.New(opts ...Options)` / `kafka.LoadFromEnv()` |
 | Confluent.Kafka + Polly | `segmentio/kafka-go` + `sony/gobreaker` |
 | `AvroMessageSerializer` | `kafka.AvroSerializer` (wire format Confluent) |
 | RetryEngine + DeadLetter | retry exp + topic `{topic}.dlq` com headers `dlq.*` |
@@ -45,18 +45,18 @@ func main() {
 	defer bus.Close()
 
 	// producer
-	if err := bus.Publish(context.Background(), orderCreated{OrderID: "123", Total: 99.90}); err != nil {
+	if err := bus.Publish(orderCreated{OrderID: "123", Total: 99.90}); err != nil {
 		log.Fatal(err)
 	}
 
 	// consumer
-	opts, _ := kafka.OptionsFromEnv()
+	opts := kafka.LoadFromEnv()
 	cons, err := kafka.NewConsumer(opts, orderHandler{}, kafka.HandlerSpec{})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer cons.Close()
-	_ = cons.Run(context.Background())
+	_ = cons.RunContext(context.Background())
 }
 
 type orderHandler struct{}

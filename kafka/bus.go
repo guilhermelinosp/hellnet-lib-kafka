@@ -54,10 +54,17 @@ func newBus(opts Options) (*Bus, error) {
 	return b, nil
 }
 
-// Publish serializes msg and produces it to "{prefix}.{messageType}".
+// Publish serializes msg and produces it to "{prefix}.{messageType}" using a
+// default (background) context — mirroring hellnet-lib-cache. Use
+// PublishContext for cancellation/deadline control.
+func (b *Bus) Publish(msg Message) error {
+	return b.PublishContext(context.Background(), msg)
+}
+
+// PublishContext serializes msg and produces it to "{prefix}.{messageType}".
 // Produce is protected by Timeout -> CircuitBreaker (the Go counterpart of the
 // .NET Polly pipeline). On breaker open, it fails fast until it half-opens.
-func (b *Bus) Publish(ctx context.Context, msg Message) error {
+func (b *Bus) PublishContext(ctx context.Context, msg Message) error {
 	topic := TopicName(b.opts, msg.MessageType())
 	payload, err := b.serializer.Serialize(topic, msg)
 	if err != nil {
