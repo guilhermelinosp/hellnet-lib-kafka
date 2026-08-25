@@ -13,7 +13,7 @@
 | `IMessageHandler<T>.HandleAsync` | `Handler[T].Handle(ctx, msg, Ctx)` |
 | `IMessageContext` | `Ctx{Topic, Partition, Offset, Key}` |
 | `MessageHandlerAttribute` | `HandlerSpec{Topic, Group, MaxRetries}` |
-| `AddHellnetKafka()` (DI) | `kafka.New(opts ...Options)` / `kafka.LoadFromEnv()` |
+| `AddHellnetKafka()` (DI) | `kafka.New(opts ...Options)` / `kafka.NewConsumer(h, spec, opts...)` |
 | Confluent.Kafka + Polly | `segmentio/kafka-go` + `sony/gobreaker` |
 | `AvroMessageSerializer` | `kafka.AvroSerializer` (wire format Confluent) |
 | `ProtobufMessageSerializer` | `kafka.ProtobufSerializer` (wire format Confluent) |
