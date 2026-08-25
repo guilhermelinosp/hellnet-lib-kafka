@@ -1,9 +1,18 @@
 // Package kafka provides an opinionated Kafka integration library for Hellnet
 // Go services, ported from the .NET Hellnet.Kafka library.
 //
-// It features env-first configuration (HELLNET_KAFKA_*), topic naming with a
-// prefix, JSON serialization, handler-based consumers with retry and a Dead
-// Letter Queue, and graceful degradation via a circuit breaker.
+// The abstraction is the message type T (generics):
+//
+//   - Producer[T] publishes messages of type T ("{prefix}.{messageType}").
+//   - Consumer[T] runs a Handler[T] with retry and a Dead Letter Queue.
+//   - Handler[T]/HandlerFunc[T] process consumed messages.
+//   - Bus is the low-level shared producer for multiple message types.
+//
+// It features env-first configuration (HELLNET_KAFKA_* via .env through
+// hellnet-lib-environments), three serializers (JSON, Avro and Protobuf with
+// Schema Registry and the Confluent wire format), timeout/retry/circuit
+// breaker on produce, and graceful degradation. Entry points: New, NewProducer
+// and NewConsumer are env-first with optional explicit Options.
 package kafka
 
 import (
