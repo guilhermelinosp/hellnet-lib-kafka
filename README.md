@@ -16,6 +16,7 @@
 | `AddHellnetKafka()` (DI) | `kafka.New(opts ...Options)` / `kafka.LoadFromEnv()` |
 | Confluent.Kafka + Polly | `segmentio/kafka-go` + `sony/gobreaker` |
 | `AvroMessageSerializer` | `kafka.AvroSerializer` (wire format Confluent) |
+| `ProtobufMessageSerializer` | `kafka.ProtobufSerializer` (wire format Confluent) |
 | RetryEngine + DeadLetter | retry exp + topic `{topic}.dlq` com headers `dlq.*` |
 
 ## Quick start
@@ -79,7 +80,7 @@ func (orderHandler) Handle(ctx context.Context, msg orderCreated, mctx kafka.Ctx
 | `HELLNET_KAFKA_SSL_CA_LOCATION` | — | CA certificate |
 | `HELLNET_KAFKA_CONSUMER_GROUP` | `""` | Obrigatório p/ consumers |
 | `HELLNET_KAFKA_TOPIC_PREFIX` | `hellnet` | Prefixo dos topics (`{prefix}.{messageType}`) |
-| `HELLNET_KAFKA_DEFAULT_SERIALIZER` | `json` | json, avro |
+| `HELLNET_KAFKA_DEFAULT_SERIALIZER` | `json` | json, avro, protobuf |
 | `HELLNET_KAFKA_SCHEMA_REGISTRY_URL` | — | Obrigatório p/ avro (Apicurio) |
 | `HELLNET_KAFKA_IDEMPOTENT` | `true` | Producer idempotente |
 | `HELLNET_KAFKA_MAX_RETRIES` | `3` | Total de attempts (handler) |
@@ -113,6 +114,8 @@ func (orderCreated) MessageType() string { return "order.created.v1" }
 Registre o schema (subject `{topic}-value`) com o `register.sh` do
 [hellnet-lib-schema](https://github.com/guilhermelinosp/hellnet-lib-schema):
 `./scripts/register.sh --registry http://localhost:8085 --schema schemas/avro/hellnet-order-created/v1`
+
+Para protobuf, registre `schemas/protobuf/hellnet-stock-updated/v1` (subject `{topic}-value`) e use `HELLNET_KAFKA_DEFAULT_SERIALIZER=protobuf` com uma struct `proto.Message` (ex.: `example/proto/hellnet/events/v1/stock.pb.go`).
 
 ## Teste local (Kafka Strimzi + Apicurio)
 

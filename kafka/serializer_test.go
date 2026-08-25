@@ -32,6 +32,22 @@ func TestBuildSerializerAvro(t *testing.T) {
 	}
 }
 
+func TestBuildSerializerProtobuf(t *testing.T) {
+	o := Default()
+	o.DefaultSerializer = "protobuf"
+	if _, err := o.buildSerializer(); err == nil {
+		t.Fatal("expected error without SchemaRegistryURL")
+	}
+	o.SchemaRegistryURL = "http://localhost:8085"
+	s, err := o.buildSerializer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.(*ProtobufSerializer); !ok {
+		t.Fatalf("expected *ProtobufSerializer, got %T", s)
+	}
+}
+
 func TestLoadFromEnvSelectsAvro(t *testing.T) {
 	t.Setenv("HELLNET_KAFKA_DEFAULT_SERIALIZER", "avro")
 	t.Setenv("HELLNET_KAFKA_SCHEMA_REGISTRY_URL", "http://localhost:8085")

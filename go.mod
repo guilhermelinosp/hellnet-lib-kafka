@@ -7,11 +7,11 @@ require (
 	github.com/hamba/avro/v2 v2.31.0
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/sony/gobreaker v1.0.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
-	github.com/golang/snappy v1.0.0 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
@@ -21,6 +21,5 @@ require (
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
-	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 )

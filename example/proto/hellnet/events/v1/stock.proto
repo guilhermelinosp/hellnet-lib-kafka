@@ -1,0 +1,14 @@
+syntax = "proto3";
+package hellnet.events.v1;
+
+option csharp_namespace = "Hellnet.Events.V1";
+option go_package = "github.com/guilhermelinosp/hellnet-lib-kafka/example/proto/hellnet/events/v1;hellnet_events_v1";
+
+message StockUpdated {
+  string productId = 1;
+  int32 quantity = 2;
+  int32 reserved = 3;
+  int32 available = 4;
+  string warehouseId = 5;
+  int64 timestamp = 6;
+}

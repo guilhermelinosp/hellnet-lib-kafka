@@ -140,6 +140,11 @@ func (o *Options) buildSerializer() (Serializer, error) {
 			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
 		}
 		return NewAvroSerializer(o.SchemaRegistryURL)
+	case "protobuf":
+		if o.SchemaRegistryURL == "" {
+			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
+		}
+		return NewProtobufSerializer(o.SchemaRegistryURL)
 	default:
 		return nil, fmt.Errorf("kafka: unsupported HELLNET_KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
 	}
