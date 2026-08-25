@@ -1,41 +1,20 @@
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Build
-bin/
-obj/
-dist/
-out/
+# Binaries
 *.exe
-*.dll
-*.so
-*.dylib
+*.test
+*.out
 
-# Dependencies
-node_modules/
-vendor/
-.terraform/
-
-# Secrets
-*.key
-*.pem
+# Env
 .env
 .env.local
 
-# Logs
-*.log
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
 
 # Go
+/bin/
 /coverage.out
-*.out
-*.test
-go.work
-go.work.sum
-/.cache/

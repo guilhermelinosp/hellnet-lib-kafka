@@ -1,68 +1,133 @@
-# golang-lib-template
+# hellnet-lib-kafka
 
-> GitHub template for production-ready Go libraries. Pre-configured with CI,
-> linting, pre-commit hooks, and dependency automation.
+> Biblioteca opinionada de integração Kafka para microsserviços Go — port fiel
+> do .NET [Hellnet.Kafka](https://github.com/guilhermelinosp/hellnet-dep-kafka),
+> no mesmo espírito de `hellnet-lib-cache` e `hellnet-lib-telemetry`.
 
-Click **"Use this template"** to scaffold a new Go library in seconds.
+## De-para (.NET → Go)
 
-## What's included
-
-- **Go module** seeded with a tiny, tested example API (`Greet`) — delete it and start coding.
-- **`.golangci.yml`** — curated linter config (errcheck, staticcheck, gosec, revive, …).
-- **`Makefile`** — `fmt`, `vet`, `lint`, `test`, `test-race`, `cover`, `build`.
-- **Lefthook** pre-commit hooks (`.lefthook.yml`): `go fmt`, `go vet`, `go mod tidy`,
-  `golangci-lint`, `yamllint`, `gitleaks`. `-race` tests run on pre-push.
-- **CI** (`.github/workflows`):
-  - `pipeline.yml` (main): semantic release + Go build via [ci-templates](https://github.com/guilhermelinosp/ci-templates).
-  - `pr-check.yml` (PR): Go vet + `go test -race` + `golangci-lint`, plus shellcheck, gitleaks, merge-check, labeler.
-- **Dependency automation** via Dependabot (`github-actions` + `gomod`).
-- **Repo meta**: issue/PR/discussion templates, `CODEOWNERS`, `SECURITY.md`, `CONTRIBUTING.md`, `FUNDING.yml`.
+| Hellnet.Kafka (.NET) | hellnet-lib-kafka (Go) |
+|---|---|
+| `IMessage.MessageType` | `Message.MessageType() string` |
+| `IMessageBus.PublishAsync` | `Bus.Publish(ctx, msg)` |
+| `IMessageHandler<T>.HandleAsync` | `Handler[T].Handle(ctx, msg, Ctx)` |
+| `IMessageContext` | `Ctx{Topic, Partition, Offset, Key}` |
+| `MessageHandlerAttribute` | `HandlerSpec{Topic, Group, MaxRetries}` |
+| `AddHellnetKafka()` (DI) | `kafka.New()` / `kafka.OptionsFromEnv()` |
+| Confluent.Kafka + Polly | `segmentio/kafka-go` + `sony/gobreaker` |
+| `AvroMessageSerializer` | `kafka.AvroSerializer` (wire format Confluent) |
+| RetryEngine + DeadLetter | retry exp + topic `{topic}.dlq` com headers `dlq.*` |
 
 ## Quick start
-
-```bash
-# 1. create your repo from this template, then:
-go mod edit -module github.com/<you>/<repo>   # replace the module path
-go get ./...
-```
 
 ```go
 package main
 
 import (
-	"fmt"
+	"context"
+	"log"
 
-	"github.com/<you>/<repo>"
+	"github.com/guilhermelinosp/hellnet-lib-kafka/kafka"
 )
 
+type orderCreated struct {
+	OrderID string `json:"orderId"`
+	Total   float64 `json:"total"`
+}
+
+func (orderCreated) MessageType() string { return "order.created.v1" }
+
 func main() {
-	msg, err := <repo>.Greet("World")
+	bus, err := kafka.New() // lê HELLNET_KAFKA_* (.env via hellnet-lib-environments)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	fmt.Println(msg) // Hello, World!
+	defer bus.Close()
+
+	// producer
+	if err := bus.Publish(context.Background(), orderCreated{OrderID: "123", Total: 99.90}); err != nil {
+		log.Fatal(err)
+	}
+
+	// consumer
+	opts, _ := kafka.OptionsFromEnv()
+	cons, err := kafka.NewConsumer(opts, orderHandler{}, kafka.HandlerSpec{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cons.Close()
+	_ = cons.Run(context.Background())
+}
+
+type orderHandler struct{}
+
+func (orderHandler) Handle(ctx context.Context, msg orderCreated, mctx kafka.Ctx) error {
+	log.Printf("order %s (partition %d offset %d)", msg.OrderID, mctx.Partition, mctx.Offset)
+	return nil
 }
 ```
 
-## Develop
+## Env vars
 
-```bash
-make all        # fmt + vet + lint + test
-make test-race  # tests with the race detector
-make cover      # coverage report (coverage.out)
+| Env | Default | Descrição |
+|---|---|---|
+| `HELLNET_KAFKA_BROKERS` | `kafka.hellnet.com.br:9094` | Lista de brokers (vírgula) |
+| `HELLNET_KAFKA_SECURITY_PROTOCOL` | `sasl_ssl` | plaintext, ssl, sasl_plaintext, sasl_ssl |
+| `HELLNET_KAFKA_SASL_MECHANISM` | `SCRAM-SHA-512` | PLAIN, SCRAM-SHA-256/512 |
+| `HELLNET_KAFKA_SASL_USERNAME` | `hellnet-app` | Usuário SCRAM |
+| `HELLNET_KAFKA_SASL_PASSWORD` | — | Obrigatório p/ sasl_* |
+| `HELLNET_KAFKA_SSL_CA_LOCATION` | — | CA certificate |
+| `HELLNET_KAFKA_CONSUMER_GROUP` | `""` | Obrigatório p/ consumers |
+| `HELLNET_KAFKA_TOPIC_PREFIX` | `hellnet` | Prefixo dos topics (`{prefix}.{messageType}`) |
+| `HELLNET_KAFKA_DEFAULT_SERIALIZER` | `json` | json, avro |
+| `HELLNET_KAFKA_SCHEMA_REGISTRY_URL` | — | Obrigatório p/ avro (Apicurio) |
+| `HELLNET_KAFKA_IDEMPOTENT` | `true` | Producer idempotente |
+| `HELLNET_KAFKA_MAX_RETRIES` | `3` | Total de attempts (handler) |
+| `HELLNET_KAFKA_RETRY_DELAY_MS` | `200` | Backoff base (exponencial + jitter) |
+| `HELLNET_KAFKA_TIMEOUT_PRODUCE_MS` | `30000` | Timeout de produce |
+| `HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT` | `5` | Falhas antes de abrir o circuit breaker |
+
+## Avro + hellnet-lib-schema
+
+Com `HELLNET_KAFKA_DEFAULT_SERIALIZER=avro` e `HELLNET_KAFKA_SCHEMA_REGISTRY_URL`,
+a serialização usa o schema registrado no Apicurio (hellnet-lib-schema) e o wire
+format Confluent (`0x00` + schema id + payload):
+
+```go
+type orderItem struct {
+	ProductID string `avro:"productId"`
+	Quantity  int32  `avro:"quantity"`
+}
+
+type orderCreated struct {
+	OrderID    string      `avro:"orderId"`
+	CustomerID string      `avro:"customerId"`
+	Amount     float64     `avro:"amount"`
+	Currency   string      `avro:"currency"`
+	Items      []orderItem `avro:"items"`
+}
+
+func (orderCreated) MessageType() string { return "order.created.v1" }
 ```
 
-Install the git hooks once:
+Registre o schema (subject `{topic}-value`) com o `register.sh` do
+[hellnet-lib-schema](https://github.com/guilhermelinosp/hellnet-lib-schema):
+`./scripts/register.sh --registry http://localhost:8085 --schema schemas/avro/hellnet-order-created/v1`
+
+## Teste local (Kafka Strimzi + Apicurio)
 
 ```bash
-lefthook install
+kubectl -n kafka port-forward svc/kafka-kafka-external-bootstrap 9094:9094 &
+kubectl -n schema port-forward svc/apicurio-registry 8085:8080 &
+
+HELLNET_KAFKA_BROKERS=127.0.0.1:9094 \
+HELLNET_KAFKA_SECURITY_PROTOCOL=plaintext \
+HELLNET_KAFKA_DEFAULT_SERIALIZER=avro \
+HELLNET_KAFKA_SCHEMA_REGISTRY_URL=http://127.0.0.1:8085 \
+HELLNET_KAFKA_CONSUMER_GROUP=hellnet.demo.orders \
+go run ./example
 ```
 
-## Conventional Commits
+## Licença
 
-Commits and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/).
-Releases and version bumps are derived from them — see `CONTRIBUTING.md`.
-
-## License
-
-[Apache 2.0](LICENSE)
+Apache-2.0
