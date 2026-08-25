@@ -74,6 +74,8 @@ func main() {
 			Currency:   "BRL",
 			Items: []orderItem{
 				{ProductID: "P-1", Quantity: int32(i + 1)},
+				{ProductID: "P-2", Quantity: int32(i + 2)},
+				{ProductID: "P-3", Quantity: int32(i + 3)},
 			},
 		}
 		if err := prod.Publish(msg); err != nil {

@@ -37,14 +37,23 @@ const orderCreatedAvsc = `{
   ]
 }`
 
+// srPath resolves the ccompat base path ("none"/"" -> root for Redpanda/Confluent).
+func srPath() string {
+	if os.Getenv("HELLNET_KAFKA_SCHEMA_REGISTRY_PATH") == "none" {
+		return ""
+	}
+	return "/apis/ccompat/v6"
+}
+
 // registerSubject registers a schema in Apicurio (ccompat) idempotently.
 func registerSubject(subject, schema, schemaType string) error {
 	body, err := json.Marshal(map[string]string{"schema": schema, "schemaType": schemaType})
 	if err != nil {
 		return err
 	}
+	path := srPath()
 	req, err := http.NewRequest(http.MethodPost,
-		os.Getenv("HELLNET_TEST_SR")+"/apis/ccompat/v6/subjects/"+subject+"/versions", bytes.NewReader(body))
+		os.Getenv("HELLNET_TEST_SR")+path+"/subjects/"+subject+"/versions", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -120,7 +129,7 @@ func TestJSONRoundTrip(t *testing.T) {
 
 func TestAvroRoundTrip(t *testing.T) {
 	ensureSchemas(t)
-	s, err := kafka.NewAvroSerializer(os.Getenv("HELLNET_TEST_SR"))
+	s, err := kafka.NewAvroSerializer(os.Getenv("HELLNET_TEST_SR"), srPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +152,7 @@ func TestAvroRoundTrip(t *testing.T) {
 
 func TestProtobufRoundTrip(t *testing.T) {
 	ensureSchemas(t)
-	s, err := kafka.NewProtobufSerializer(os.Getenv("HELLNET_TEST_SR"))
+	s, err := kafka.NewProtobufSerializer(os.Getenv("HELLNET_TEST_SR"), srPath())
 	if err != nil {
 		t.Fatal(err)
 	}

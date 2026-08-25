@@ -83,7 +83,8 @@ e `Handler[T]` — tópico/grupo/serializer resolvidos a partir de `T.MessageTyp
 | `HELLNET_KAFKA_CONSUMER_GROUP` | `""` | Obrigatório p/ consumers |
 | `HELLNET_KAFKA_TOPIC_PREFIX` | `hellnet` | Prefixo dos topics (`{prefix}.{messageType}`) |
 | `HELLNET_KAFKA_DEFAULT_SERIALIZER` | `json` | json, avro, protobuf |
-| `HELLNET_KAFKA_SCHEMA_REGISTRY_URL` | — | Obrigatório p/ avro (Apicurio) |
+| `HELLNET_KAFKA_SCHEMA_REGISTRY_URL` | — | Obrigatório p/ avro/protobuf |
+| `HELLNET_KAFKA_SCHEMA_REGISTRY_PATH` | `/apis/ccompat/v6` | Base ccompat: Apicurio usa `/apis/ccompat/v6`; Redpanda/Confluent usam a raiz (`none`) |
 | `HELLNET_KAFKA_IDEMPOTENT` | `true` | Producer idempotente |
 | `HELLNET_KAFKA_MAX_RETRIES` | `3` | Total de attempts (handler) |
 | `HELLNET_KAFKA_RETRY_DELAY_MS` | `200` | Backoff base (exponencial + jitter) |

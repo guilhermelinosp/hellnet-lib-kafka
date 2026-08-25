@@ -21,11 +21,12 @@ type Bus struct {
 // newBus builds a Bus from validated options.
 func newBus(opts Options) (*Bus, error) {
 	w := &kafka.Writer{
-		Addr:         kafka.TCP(opts.Brokers...),
-		Balancer:     &kafka.LeastBytes{},
-		RequiredAcks: kafka.RequireAll,
-		Async:        false,
-		MaxAttempts:  1, // retries/breaker are handled by the bus
+		Addr:                   kafka.TCP(opts.Brokers...),
+		Balancer:               &kafka.LeastBytes{},
+		RequiredAcks:           kafka.RequireAll,
+		Async:                  false,
+		MaxAttempts:            3,    // transient errors (e.g. leader election) retried
+		AllowAutoTopicCreation: true, // brokers with auto_create_topics (e.g. Redpanda)
 	}
 	if d := newDialer(opts); d != nil {
 		dial := d.DialContext
