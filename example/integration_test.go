@@ -171,11 +171,11 @@ func TestKafkaProtobufE2E(t *testing.T) {
 	opts := kafka.LoadFromEnv()
 	opts.DefaultSerializer = "protobuf"
 
-	bus, err := kafka.New(opts)
+	prod, err := kafka.NewProducer[*stockMessage](opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer bus.Close()
+	defer prod.Close()
 
 	// 1) produce a StockUpdated (protobuf wire format) — built in place to
 	// avoid copying the proto message (which holds a mutex).
@@ -186,7 +186,7 @@ func TestKafkaProtobufE2E(t *testing.T) {
 	produced.StockUpdated.WarehouseId = "WH-1"
 	produced.StockUpdated.Timestamp = 1720000000
 	want := &produced.StockUpdated
-	if err := bus.Publish(produced); err != nil {
+	if err := prod.Publish(produced); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -222,9 +222,14 @@ func TestKafkaProtobufE2E(t *testing.T) {
 }
 
 // failHandler always fails so the consumer retries and then DLQs.
-type failHandler struct{}
+type failHandler struct {
+	t *testing.T
+}
 
-func (failHandler) Handle(context.Context, orderCreated, kafka.Ctx) error {
+func (f failHandler) Handle(_ context.Context, msg orderCreated, mctx kafka.Ctx) error {
+	if f.t != nil {
+		f.t.Logf("failHandler called order=%q offset=%d", msg.OrderID, mctx.Offset)
+	}
 	return errors.New("always fails")
 }
 
@@ -256,14 +261,18 @@ func TestKafkaRetryDLQ(t *testing.T) {
 
 	// consumer whose handler always fails -> retries -> DLQ
 	opts.ConsumerGroup = "hellnet.test.dlq." + id
-	cons, err := kafka.NewConsumer[orderCreated](failHandler{}, kafka.HandlerSpec{}, opts)
+	cons, err := kafka.NewConsumer[orderCreated](failHandler{t: t}, kafka.HandlerSpec{}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cons.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	go func() { _ = cons.RunContext(ctx) }()
+	go func() {
+		if err := cons.RunContext(ctx); err != nil {
+			t.Logf("consumer RunContext ended: %v", err)
+		}
+	}()
 
 	// read the .dlq topic raw until the message (with dlq.reason header) appears
 	r := kafkago.NewReader(kafkago.ReaderConfig{
@@ -277,10 +286,11 @@ func TestKafkaRetryDLQ(t *testing.T) {
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		m, err := r.FetchMessage(context.Background())
+		rctx, rcancel := context.WithTimeout(context.Background(), 3*time.Second)
+		m, err := r.FetchMessage(rctx)
+		rcancel()
 		if err != nil {
-			time.Sleep(250 * time.Millisecond)
-			continue
+			continue // timeout/no message yet — re-check the deadline
 		}
 		_ = r.CommitMessages(context.Background(), m)
 		if !bytes.Contains(m.Value, []byte(id)) {

@@ -1,6 +1,6 @@
 // Command hellnet-kafka-demo exercises hellnet-lib-kafka against a live Kafka:
-// produce order.created.v1 messages, consume them with a handler, and (with
-// FAIL_HANDLER=1) observe a message landing on the DLQ after retries.
+// produce order.created.v1 messages via the Bus and consume them with a
+// handler-based Consumer (topics, groups and serializers resolved via env).
 //
 // The message struct mirrors the Avro schema registered in hellnet-lib-schema
 // (schemas/avro/hellnet-order-created/v1/schema.avsc). With
@@ -57,11 +57,14 @@ func (orderHandler) Handle(_ context.Context, msg orderCreated, mctx kafka.Ctx) 
 }
 
 func main() {
-	bus, err := kafka.New()
+	ctx := context.Background()
+
+	// Producer[T]: generics como abstração — tipado pelo tipo da mensagem.
+	prod, err := kafka.NewProducer[orderCreated]()
 	if err != nil {
-		log.Fatalf("kafka.New: %v", err)
+		log.Fatalf("kafka.NewProducer: %v", err)
 	}
-	defer bus.Close()
+	defer prod.Close()
 
 	for i := 0; i < 3; i++ {
 		msg := orderCreated{
@@ -73,19 +76,20 @@ func main() {
 				{ProductID: "P-1", Quantity: int32(i + 1)},
 			},
 		}
-		if err := bus.Publish(msg); err != nil {
+		if err := prod.Publish(msg); err != nil {
 			log.Fatalf("publish: %v", err)
 		}
 		log.Printf("published %s -> hellnet.order.created.v1", msg.OrderID)
 	}
 
+	// Consumer[T]: env-first, tipado pelo handler.
 	cons, err := kafka.NewConsumer(orderHandler{}, kafka.HandlerSpec{})
 	if err != nil {
 		log.Fatalf("NewConsumer: %v", err)
 	}
 	defer cons.Close()
 
-	rctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if err := cons.RunContext(rctx); err != nil {
 		log.Printf("consumer run ended: %v", err)
