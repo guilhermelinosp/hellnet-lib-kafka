@@ -57,8 +57,6 @@ func (orderHandler) Handle(_ context.Context, msg orderCreated, mctx kafka.Ctx) 
 }
 
 func main() {
-	ctx := context.Background()
-
 	bus, err := kafka.New()
 	if err != nil {
 		log.Fatalf("kafka.New: %v", err)
@@ -81,14 +79,13 @@ func main() {
 		log.Printf("published %s -> hellnet.order.created.v1", msg.OrderID)
 	}
 
-	opts := kafka.LoadFromEnv()
-	cons, err := kafka.NewConsumer(opts, orderHandler{}, kafka.HandlerSpec{})
+	cons, err := kafka.NewConsumer(orderHandler{}, kafka.HandlerSpec{})
 	if err != nil {
 		log.Fatalf("NewConsumer: %v", err)
 	}
 	defer cons.Close()
 
-	rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	rctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := cons.RunContext(rctx); err != nil {
 		log.Printf("consumer run ended: %v", err)

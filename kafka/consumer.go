@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -28,11 +29,20 @@ type Consumer[T Message] struct {
 }
 
 // NewConsumer builds a consumer for the given handler and per-handler spec.
-func NewConsumer[T Message](opts Options, h Handler[T], spec HandlerSpec) (*Consumer[T], error) {
+// Options are optional: when omitted, the environment is loaded internally
+// (HELLNET_KAFKA_* via .env), mirroring New(). Explicit opts override the env.
+func NewConsumer[T Message](h Handler[T], spec HandlerSpec, opts ...Options) (*Consumer[T], error) {
 	if h == nil {
 		return nil, fmt.Errorf("kafka: handler is nil")
 	}
-	group := opts.ConsumerGroup
+	o := LoadFromEnv()
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	if err := o.validate(); err != nil {
+		return nil, err
+	}
+	group := o.ConsumerGroup
 	if spec.Group != "" {
 		group = spec.Group
 	}
@@ -40,35 +50,35 @@ func NewConsumer[T Message](opts Options, h Handler[T], spec HandlerSpec) (*Cons
 		return nil, fmt.Errorf("kafka: consumer group required (HELLNET_KAFKA_CONSUMER_GROUP or HandlerSpec.Group)")
 	}
 	var zero T
-	topic := spec.resolveTopic(opts, zero.MessageType())
+	topic := spec.resolveTopic(o, zero.MessageType())
 
-	bus, err := newBus(opts)
+	bus, err := newBus(o)
 	if err != nil {
 		return nil, err
 	}
-	serializer, err := opts.ensureSerializer()
+	serializer, err := o.ensureSerializer()
 	if err != nil {
 		_ = bus.Close()
 		return nil, err
 	}
 
 	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        opts.Brokers,
+		Brokers:        o.Brokers,
 		GroupID:        group,
 		Topic:          topic,
 		MinBytes:       10e3,
 		MaxBytes:       10e6,
 		CommitInterval: time.Second,
 		StartOffset:    kafka.FirstOffset, // new groups replay from the beginning
-		Dialer:         newDialer(opts),
+		Dialer:         newDialer(o),
 	})
 
-	maxRetries := opts.MaxRetries
+	maxRetries := o.MaxRetries
 	if spec.MaxRetries > 0 {
 		maxRetries = spec.MaxRetries
 	}
 	return &Consumer[T]{
-		opts:       opts,
+		opts:       o,
 		handler:    h,
 		spec:       spec,
 		reader:     r,
@@ -101,7 +111,15 @@ func (c *Consumer[T]) RunContext(ctx context.Context) error {
 		}
 
 		var msg T
-		if err := c.serializer.Deserialize(m.Topic, m.Value, &msg); err != nil {
+		out := any(&msg)
+		// For pointer message types (the natural Go/protobuf style), allocate
+		// and pass the pointer itself — serializers expect the message, not a
+		// **T. Value types keep the addressable &msg.
+		if t := reflect.TypeOf(msg); t != nil && t.Kind() == reflect.Ptr {
+			msg = reflect.New(t.Elem()).Interface().(T)
+			out = any(msg)
+		}
+		if err := c.serializer.Deserialize(m.Topic, m.Value, out); err != nil {
 			_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, int64(m.Offset),
 				"deserialize: "+err.Error(), m.Value)
 			_ = c.reader.CommitMessages(ctx, m)
