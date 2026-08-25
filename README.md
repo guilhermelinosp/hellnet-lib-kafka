@@ -19,7 +19,7 @@
 | `ProtobufMessageSerializer` | `kafka.ProtobufSerializer` (wire format Confluent) |
 | RetryEngine + DeadLetter | retry exp + topic `{topic}.dlq` com headers `dlq.*` |
 
-## Quick start
+## Quick start (generics como abstração)
 
 ```go
 package main
@@ -38,35 +38,37 @@ type orderCreated struct {
 
 func (orderCreated) MessageType() string { return "order.created.v1" }
 
-func main() {
-	bus, err := kafka.New() // lê HELLNET_KAFKA_* (.env via hellnet-lib-environments)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer bus.Close()
-
-	// producer
-	if err := bus.Publish(orderCreated{OrderID: "123", Total: 99.90}); err != nil {
-		log.Fatal(err)
-	}
-
-	// consumer
-	opts := kafka.LoadFromEnv()
-	cons, err := kafka.NewConsumer(opts, orderHandler{}, kafka.HandlerSpec{})
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer cons.Close()
-	_ = cons.RunContext(context.Background())
-}
-
 type orderHandler struct{}
 
 func (orderHandler) Handle(ctx context.Context, msg orderCreated, mctx kafka.Ctx) error {
 	log.Printf("order %s (partition %d offset %d)", msg.OrderID, mctx.Partition, mctx.Offset)
 	return nil
 }
+
+func main() {
+	// Producer tipado pelo tipo da mensagem (generics como abstração).
+	prod, err := kafka.NewProducer[orderCreated]() // lê HELLNET_KAFKA_* (.env)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer prod.Close()
+
+	if err := prod.Publish(orderCreated{OrderID: "123", Total: 99.90}); err != nil {
+		log.Fatal(err)
+	}
+
+	// Consumer tipado pelo handler (env-first; opts opcionais).
+	cons, err := kafka.NewConsumer(orderHandler{}, kafka.HandlerSpec{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cons.Close()
+	_ = cons.RunContext(context.Background())
+}
 ```
+
+A abstração é o **tipo da mensagem `T`**: `Producer[T]` (publish tipado), `Consumer[T]`
+e `Handler[T]` — tópico/grupo/serializer resolvidos a partir de `T.MessageType` e do env.
 
 ## Env vars
 

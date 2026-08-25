@@ -107,7 +107,12 @@ func (c *Consumer[T]) RunContext(ctx context.Context) error {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil
 			}
-			return fmt.Errorf("kafka: fetch: %w", err)
+			// Transient fetch errors (rebalance, leader changes, network):
+			// back off briefly and keep consuming instead of dying silently.
+			if err := sleepCtx(ctx, 200*time.Millisecond); err != nil {
+				return nil
+			}
+			continue
 		}
 
 		var msg T
