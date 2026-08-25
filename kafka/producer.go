@@ -15,6 +15,7 @@ type Producer[T Message] struct {
 // NewProducer loads env (HELLNET_KAFKA_* via .env) and builds a typed producer
 // for T. Explicit opts override the environment when provided.
 func NewProducer[T Message](opts ...Options) (*Producer[T], error) {
+	loadEnvFiles()
 	o := LoadFromEnv()
 	if len(opts) > 0 {
 		o = opts[0]
