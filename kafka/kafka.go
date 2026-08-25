@@ -92,60 +92,87 @@ func (o *Options) fromEnv(base Options) {
 	o.DeadLetterTopic = environments.GetString("HELLNET_KAFKA_", "", "DEAD_LETTER_TOPIC", base.DeadLetterTopic)
 	o.DefaultSerializer = environments.GetString("HELLNET_KAFKA_", "", "DEFAULT_SERIALIZER", base.DefaultSerializer)
 	o.SchemaRegistryURL = environments.GetString("HELLNET_KAFKA_", "", "SCHEMA_REGISTRY_URL", base.SchemaRegistryURL)
-	o.Serializer = base.Serializer
-	if o.Serializer == nil {
-		o.Serializer = JSONSerializer{}
-	}
+	// Serializer is intentionally left nil here: New()/NewConsumer build it
+	// from DefaultSerializer (json|avro).
 }
 
-// OptionsFromEnv loads HELLNET_KAFKA_* env (plus .env via environments) and
-// validates the result. New() uses it internally; consumers share the same
-// options so producers and consumers agree on brokers, prefix, etc.
-func OptionsFromEnv() (Options, error) {
-	opts := Options{}
-	opts.fromEnv(Default())
+// LoadFromEnv loads HELLNET_KAFKA_* env (plus .env via environments) into
+// Options with Hellnet defaults — mirroring hellnet-lib-cache/telemetry.
+func LoadFromEnv() Options {
+	o := Options{}
+	o.fromEnv(Default())
+	return o
+}
 
-	if len(opts.Brokers) == 0 {
-		return opts, fmt.Errorf("kafka: HELLNET_KAFKA_BROKERS is empty")
+// loadEnvFiles loads .env files through hellnet-lib-environments (embedded
+// .env + ./.env from disk), so callers only need New().
+func loadEnvFiles() {
+	_ = environments.LoadDotEnv("HELLNET_KAFKA_ENV_FILE", "HELLNET_ENV_FILE")
+}
+
+// validate checks required and supported option values.
+func (o *Options) validate() error {
+	if len(o.Brokers) == 0 {
+		return fmt.Errorf("kafka: HELLNET_KAFKA_BROKERS is empty")
 	}
-	if opts.MaxRetries < 1 {
-		return opts, fmt.Errorf("kafka: HELLNET_KAFKA_MAX_RETRIES must be >= 1")
+	if o.MaxRetries < 1 {
+		return fmt.Errorf("kafka: HELLNET_KAFKA_MAX_RETRIES must be >= 1")
 	}
-	switch opts.SecurityProtocol {
+	switch o.SecurityProtocol {
 	case "plaintext", "ssl", "sasl_plaintext", "sasl_ssl":
 	default:
-		return opts, fmt.Errorf("kafka: unsupported HELLNET_KAFKA_SECURITY_PROTOCOL %q", opts.SecurityProtocol)
+		return fmt.Errorf("kafka: unsupported HELLNET_KAFKA_SECURITY_PROTOCOL %q", o.SecurityProtocol)
 	}
-	if (opts.SecurityProtocol == "sasl_plaintext" || opts.SecurityProtocol == "sasl_ssl") && opts.SASLPassword == "" {
-		return opts, fmt.Errorf("kafka: HELLNET_KAFKA_SASL_PASSWORD is required for %s", opts.SecurityProtocol)
+	if (o.SecurityProtocol == "sasl_plaintext" || o.SecurityProtocol == "sasl_ssl") && o.SASLPassword == "" {
+		return fmt.Errorf("kafka: HELLNET_KAFKA_SASL_PASSWORD is required for %s", o.SecurityProtocol)
 	}
-	switch opts.DefaultSerializer {
-	case "", "json":
-		opts.Serializer = JSONSerializer{}
-	case "avro":
-		if opts.SchemaRegistryURL == "" {
-			return opts, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
-		}
-		s, err := NewAvroSerializer(opts.SchemaRegistryURL)
-		if err != nil {
-			return opts, err
-		}
-		opts.Serializer = s
-	default:
-		return opts, fmt.Errorf("kafka: unsupported HELLNET_KAFKA_DEFAULT_SERIALIZER %q", opts.DefaultSerializer)
-	}
-	return opts, nil
+	return nil
 }
 
-// New loads HELLNET_KAFKA_* env (plus .env via environments), validates and
-// builds a ready-to-use Bus. A consumer group is only required if a consumer
-// will be started.
-func New() (*Bus, error) {
-	opts, err := OptionsFromEnv()
+// buildSerializer selects the serializer per DefaultSerializer ("json" or
+// "avro"). Avro requires a Schema Registry URL (hellnet-lib-schema).
+func (o *Options) buildSerializer() (Serializer, error) {
+	switch o.DefaultSerializer {
+	case "", "json":
+		return JSONSerializer{}, nil
+	case "avro":
+		if o.SchemaRegistryURL == "" {
+			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
+		}
+		return NewAvroSerializer(o.SchemaRegistryURL)
+	default:
+		return nil, fmt.Errorf("kafka: unsupported HELLNET_KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
+	}
+}
+
+// ensureSerializer returns the configured serializer, building it from
+// DefaultSerializer when nil.
+func (o *Options) ensureSerializer() (Serializer, error) {
+	if o.Serializer != nil {
+		return o.Serializer, nil
+	}
+	return o.buildSerializer()
+}
+
+// New loads env (.env + HELLNET_KAFKA_*) and builds a ready-to-use Bus.
+// Explicit opts override the environment when provided (useful in tests and
+// embedded contexts), mirroring hellnet-lib-cache/telemetry. A consumer group
+// is only required if a consumer will be started.
+func New(opts ...Options) (*Bus, error) {
+	loadEnvFiles()
+	o := LoadFromEnv()
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	if err := o.validate(); err != nil {
+		return nil, err
+	}
+	s, err := o.buildSerializer()
 	if err != nil {
 		return nil, err
 	}
-	return newBus(opts)
+	o.Serializer = s
+	return newBus(o)
 }
 
 // TopicName resolves the topic for a message type: "{prefix}.{messageType}".

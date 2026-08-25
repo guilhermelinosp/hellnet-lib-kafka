@@ -75,16 +75,13 @@ func main() {
 				{ProductID: "P-1", Quantity: int32(i + 1)},
 			},
 		}
-		if err := bus.Publish(ctx, msg); err != nil {
+		if err := bus.Publish(msg); err != nil {
 			log.Fatalf("publish: %v", err)
 		}
 		log.Printf("published %s -> hellnet.order.created.v1", msg.OrderID)
 	}
 
-	opts, err := kafka.OptionsFromEnv()
-	if err != nil {
-		log.Fatalf("OptionsFromEnv: %v", err)
-	}
+	opts := kafka.LoadFromEnv()
 	cons, err := kafka.NewConsumer(opts, orderHandler{}, kafka.HandlerSpec{})
 	if err != nil {
 		log.Fatalf("NewConsumer: %v", err)
@@ -93,7 +90,7 @@ func main() {
 
 	rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if err := cons.Run(rctx); err != nil {
+	if err := cons.RunContext(rctx); err != nil {
 		log.Printf("consumer run ended: %v", err)
 	}
 	log.Println("done")

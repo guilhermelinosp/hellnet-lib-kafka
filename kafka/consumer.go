@@ -46,6 +46,11 @@ func NewConsumer[T Message](opts Options, h Handler[T], spec HandlerSpec) (*Cons
 	if err != nil {
 		return nil, err
 	}
+	serializer, err := opts.ensureSerializer()
+	if err != nil {
+		_ = bus.Close()
+		return nil, err
+	}
 
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        opts.Brokers,
@@ -68,19 +73,24 @@ func NewConsumer[T Message](opts Options, h Handler[T], spec HandlerSpec) (*Cons
 		spec:       spec,
 		reader:     r,
 		bus:        bus,
-		serializer: opts.Serializer,
+		serializer: serializer,
 		topic:      topic,
 		group:      group,
 		maxRetries: maxRetries,
 	}, nil
 }
 
-// Run consumes messages until ctx is cancelled, an unrecoverable error occurs,
-// or the reader fails. It commits offsets after each successful or DLQ'd batch.
-func (c *Consumer[T]) Run(ctx context.Context) error {
-	if c.serializer == nil {
-		c.serializer = JSONSerializer{}
-	}
+// Run consumes messages with a default (background) context — mirroring
+// hellnet-lib-cache. It blocks until the reader fails or Close is called;
+// use RunContext for cancellation/timeout control.
+func (c *Consumer[T]) Run() error {
+	return c.RunContext(context.Background())
+}
+
+// RunContext consumes messages until ctx is cancelled, an unrecoverable error
+// occurs, or the reader fails. It commits offsets after each successful or
+// DLQ'd batch.
+func (c *Consumer[T]) RunContext(ctx context.Context) error {
 	for {
 		m, err := c.reader.FetchMessage(ctx)
 		if err != nil {
