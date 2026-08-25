@@ -230,6 +230,155 @@ func TestKafkaProtobufE2E(t *testing.T) {
 	}
 }
 
+
+// --- matriz completa: E2E e DLQ para json/avro/protobuf -------------------
+
+// runE2E produces want and consumes it back (fresh group) for a serializer.
+func runE2E[T kafka.Message](t *testing.T, serializer string, want T, assert func(T) bool) {
+	opts := kafka.LoadFromEnv()
+	opts.DefaultSerializer = serializer
+
+	prod, err := kafka.NewProducer[T](opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prod.Close()
+	if err := prod.Publish(want); err != nil {
+		t.Fatalf("publish(%s): %v", serializer, err)
+	}
+
+	done := make(chan error, 1)
+	h := kafka.HandlerFunc[T](func(_ context.Context, msg T, _ kafka.Ctx) error {
+		if assert(msg) {
+			done <- nil
+		}
+		return nil
+	})
+	opts.ConsumerGroup = "hellnet.test.e2e." + serializer + "." + time.Now().Format("150405")
+	cons, err := kafka.NewConsumer[T](h, kafka.HandlerSpec{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cons.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	go func() { _ = cons.RunContext(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for " + serializer + " e2e message")
+	}
+}
+
+func TestKafkaJSONE2E(t *testing.T) {
+	if os.Getenv("HELLNET_TEST_KAFKA") == "" {
+		t.Skip("HELLNET_TEST_KAFKA not set")
+	}
+	runE2E(t, "json", jsonMessage{OrderID: "E2E-JSON-1", Total: 42},
+		func(m jsonMessage) bool { return m.OrderID == "E2E-JSON-1" && m.Total == 42 })
+}
+
+func TestKafkaAvroE2E(t *testing.T) {
+	if os.Getenv("HELLNET_TEST_KAFKA") == "" {
+		t.Skip("HELLNET_TEST_KAFKA not set")
+	}
+	ensureSchemas(t)
+	runE2E(t, "avro", orderCreated{OrderID: "E2E-AVRO-1", CustomerID: "CUST-1", Amount: 99.9, Currency: "BRL"},
+		func(m orderCreated) bool { return m.OrderID == "E2E-AVRO-1" && m.Amount == 99.9 })
+}
+
+// failingHandler always fails so the consumer retries and then DLQs.
+type failingHandler[T kafka.Message] struct{}
+
+func (failingHandler[T]) Handle(context.Context, T, kafka.Ctx) error {
+	return errors.New("always fails")
+}
+
+// runDLQ produces want, consumes it with a failing handler, and verifies the
+// message lands on the .dlq topic with the dlq.reason header.
+func runDLQ[T kafka.Message](t *testing.T, serializer string, want T, id, dlqTopic string) {
+	opts := kafka.LoadFromEnv()
+	opts.DefaultSerializer = serializer
+	opts.MaxRetries = 2
+	opts.RetryDelay = 100 * time.Millisecond
+
+	prod, err := kafka.NewProducer[T](opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prod.Close()
+	if err := prod.Publish(want); err != nil {
+		t.Fatalf("publish(%s): %v", serializer, err)
+	}
+
+	opts.ConsumerGroup = "hellnet.test.dlq." + serializer + "." + id
+	cons, err := kafka.NewConsumer[T](failingHandler[T]{}, kafka.HandlerSpec{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cons.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	go func() { _ = cons.RunContext(ctx) }()
+
+	r := kafkago.NewReader(kafkago.ReaderConfig{
+		Brokers:        opts.Brokers,
+		GroupID:        "hellnet.test.dlqread." + serializer + "." + id,
+		Topic:          dlqTopic,
+		StartOffset:    kafkago.FirstOffset,
+		CommitInterval: time.Second,
+	})
+	defer r.Close()
+
+	deadline := time.Now().Add(35 * time.Second)
+	for time.Now().Before(deadline) {
+		rctx, rcancel := context.WithTimeout(context.Background(), 3*time.Second)
+		m, err := r.FetchMessage(rctx)
+		rcancel()
+		if err != nil {
+			continue
+		}
+		_ = r.CommitMessages(context.Background(), m)
+		if !bytes.Contains(m.Value, []byte(id)) {
+			continue
+		}
+		var hasReason bool
+		for _, h := range m.Headers {
+			if h.Key == "dlq.reason" && len(h.Value) > 0 {
+				hasReason = true
+			}
+		}
+		if !hasReason {
+			t.Fatal("dlq.reason header missing on DLQ message (" + serializer + ")")
+		}
+		return
+	}
+	t.Fatal("message not found on DLQ topic (" + serializer + ")")
+}
+
+func TestKafkaRetryDLQJSON(t *testing.T) {
+	if os.Getenv("HELLNET_TEST_KAFKA") == "" {
+		t.Skip("HELLNET_TEST_KAFKA not set")
+	}
+	runDLQ(t, "json", jsonMessage{OrderID: "DLQJ-1", Total: 1}, "DLQJ-1", "hellnet.order.created.v1.dlq")
+}
+
+func TestKafkaRetryDLQProtobuf(t *testing.T) {
+	if os.Getenv("HELLNET_TEST_KAFKA") == "" {
+		t.Skip("HELLNET_TEST_KAFKA not set")
+	}
+	ensureSchemas(t)
+	sm := &stockMessage{}
+	sm.StockUpdated.ProductId = "DLQP-1"
+	sm.StockUpdated.Quantity = 3
+	runDLQ(t, "protobuf", sm, "DLQP-1", "hellnet.stock.updated.v1.dlq")
+}
+
+
 // failHandler always fails so the consumer retries and then DLQs.
 type failHandler struct {
 	t *testing.T
