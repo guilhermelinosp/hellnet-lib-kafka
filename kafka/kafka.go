@@ -47,8 +47,11 @@ type Options struct {
 	Serializer Serializer
 	// DefaultSerializer selects the serializer: "json" (default) or "avro".
 	DefaultSerializer string
-	// SchemaRegistryURL is required for avro (hellnet-lib-schema registry).
+	// SchemaRegistryURL is required for avro/protobuf (hellnet-lib-schema registry).
 	SchemaRegistryURL string
+	// SchemaRegistryPath is the ccompat API base path: "/apis/ccompat/v6" for
+	// Apicurio, "" (root) for Redpanda/Confluent.
+	SchemaRegistryPath string
 	// DeadLetterTopic overrides the default "{topic}.dlq".
 	DeadLetterTopic string
 }
@@ -69,6 +72,7 @@ func Default() Options {
 		CircuitBreakerCount:  5,
 		DeadLetterTopic:      "",
 		DefaultSerializer:    "json",
+		SchemaRegistryPath:   "/apis/ccompat/v6",
 	}
 }
 
@@ -92,6 +96,10 @@ func (o *Options) fromEnv(base Options) {
 	o.DeadLetterTopic = environments.GetString("HELLNET_KAFKA_", "", "DEAD_LETTER_TOPIC", base.DeadLetterTopic)
 	o.DefaultSerializer = environments.GetString("HELLNET_KAFKA_", "", "DEFAULT_SERIALIZER", base.DefaultSerializer)
 	o.SchemaRegistryURL = environments.GetString("HELLNET_KAFKA_", "", "SCHEMA_REGISTRY_URL", base.SchemaRegistryURL)
+	o.SchemaRegistryPath = environments.GetString("HELLNET_KAFKA_", "", "SCHEMA_REGISTRY_PATH", base.SchemaRegistryPath)
+	if o.SchemaRegistryPath == "none" || o.SchemaRegistryPath == "/" {
+		o.SchemaRegistryPath = "" // raiz: Redpanda/Confluent
+	}
 	// Serializer is intentionally left nil here: New()/NewConsumer build it
 	// from DefaultSerializer (json|avro).
 }
@@ -139,12 +147,12 @@ func (o *Options) buildSerializer() (Serializer, error) {
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
 		}
-		return NewAvroSerializer(o.SchemaRegistryURL)
+		return NewAvroSerializer(o.SchemaRegistryURL, o.SchemaRegistryPath)
 	case "protobuf":
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
 		}
-		return NewProtobufSerializer(o.SchemaRegistryURL)
+		return NewProtobufSerializer(o.SchemaRegistryURL, o.SchemaRegistryPath)
 	default:
 		return nil, fmt.Errorf("kafka: unsupported HELLNET_KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
 	}

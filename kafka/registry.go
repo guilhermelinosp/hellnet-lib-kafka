@@ -25,13 +25,15 @@ func newTimeoutContext(d time.Duration) (context.Context, context.CancelFunc) {
 // Registry alike.
 type registryClient struct {
 	base    string
+	path    string
 	http    *http.Client
 	timeout time.Duration
 }
 
-func newRegistryClient(url string) *registryClient {
+func newRegistryClient(url, path string) *registryClient {
 	return &registryClient{
 		base:    strings.TrimSuffix(url, "/"),
+		path:    strings.TrimSuffix(path, "/"),
 		http:    &http.Client{},
 		timeout: 10 * time.Second,
 	}
@@ -67,7 +69,7 @@ func (c *registryClient) get(path string, out any) error {
 // latestSchema returns the latest schema string and id for a subject.
 func (c *registryClient) latestSchema(subject string) (string, int, error) {
 	var sr schemaResponse
-	if err := c.get("/apis/ccompat/v6/subjects/"+urlPathEscape(subject)+"/versions/latest", &sr); err != nil {
+	if err := c.get(c.path+"/subjects/"+urlPathEscape(subject)+"/versions/latest", &sr); err != nil {
 		return "", 0, err
 	}
 	return sr.Schema, sr.ID, nil
@@ -76,7 +78,7 @@ func (c *registryClient) latestSchema(subject string) (string, int, error) {
 // schemaByID returns the schema string for a global schema id.
 func (c *registryClient) schemaByID(id int) (string, error) {
 	var sr schemaResponse
-	if err := c.get(fmt.Sprintf("/apis/ccompat/v6/schemas/ids/%d", id), &sr); err != nil {
+	if err := c.get(fmt.Sprintf(c.path+"/schemas/ids/%d", id), &sr); err != nil {
 		return "", err
 	}
 	return sr.Schema, nil
