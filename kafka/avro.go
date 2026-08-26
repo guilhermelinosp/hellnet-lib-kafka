@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -20,11 +21,14 @@ type AvroSerializer struct {
 }
 
 // NewAvroSerializer builds an Avro serializer bound to the registry URL.
+// Standalone use: fetches derive from context.Background(). When built through
+// New/NewConsumer (buildSerializer), the registry client instead derives from
+// the context captured once at construction.
 func NewAvroSerializer(url, path string) (*AvroSerializer, error) {
 	if url == "" {
 		return nil, fmt.Errorf("kafka: schema registry URL is empty")
 	}
-	return &AvroSerializer{registry: newRegistryClient(url, path)}, nil
+	return &AvroSerializer{registry: newRegistryClient(context.Background(), url, path)}, nil
 }
 
 // Serialize encodes value with the latest schema for "{topic}-value" and

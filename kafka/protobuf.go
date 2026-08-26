@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -19,11 +20,14 @@ type ProtobufSerializer struct {
 }
 
 // NewProtobufSerializer builds a Protobuf serializer bound to the registry URL.
+// Standalone use: fetches derive from context.Background(). When built through
+// New/NewConsumer (buildSerializer), the registry client instead derives from
+// the context captured once at construction.
 func NewProtobufSerializer(url, path string) (*ProtobufSerializer, error) {
 	if url == "" {
 		return nil, fmt.Errorf("kafka: schema registry URL is empty")
 	}
-	return &ProtobufSerializer{registry: newRegistryClient(url, path)}, nil
+	return &ProtobufSerializer{registry: newRegistryClient(context.Background(), url, path)}, nil
 }
 
 // Serialize encodes a proto.Message and prepends the Confluent wire header.

@@ -1,13 +1,14 @@
 package kafka
 
 import (
+	"context"
 	"testing"
 )
 
 func TestBuildSerializerJSON(t *testing.T) {
 	o := Default()
 	o.DefaultSerializer = "json"
-	s, err := o.buildSerializer()
+	s, err := o.buildSerializer(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,11 +20,11 @@ func TestBuildSerializerJSON(t *testing.T) {
 func TestBuildSerializerAvro(t *testing.T) {
 	o := Default()
 	o.DefaultSerializer = "avro"
-	if _, err := o.buildSerializer(); err == nil {
+	if _, err := o.buildSerializer(context.Background()); err == nil {
 		t.Fatal("expected error without SchemaRegistryURL")
 	}
 	o.SchemaRegistryURL = "http://localhost:8085"
-	s, err := o.buildSerializer()
+	s, err := o.buildSerializer(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,11 +36,11 @@ func TestBuildSerializerAvro(t *testing.T) {
 func TestBuildSerializerProtobuf(t *testing.T) {
 	o := Default()
 	o.DefaultSerializer = "protobuf"
-	if _, err := o.buildSerializer(); err == nil {
+	if _, err := o.buildSerializer(context.Background()); err == nil {
 		t.Fatal("expected error without SchemaRegistryURL")
 	}
 	o.SchemaRegistryURL = "http://localhost:8085"
-	s, err := o.buildSerializer()
+	s, err := o.buildSerializer(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func TestLoadFromEnvSelectsAvro(t *testing.T) {
 	t.Setenv("HELLNET_KAFKA_DEFAULT_SERIALIZER", "avro")
 	t.Setenv("HELLNET_KAFKA_SCHEMA_REGISTRY_URL", "http://localhost:8085")
 	o := LoadFromEnv()
-	s, err := o.ensureSerializer()
+	s, err := o.ensureSerializer(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

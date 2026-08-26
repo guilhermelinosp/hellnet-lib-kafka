@@ -101,8 +101,13 @@ func (o *Options) fromEnv(base Options) {
 	o.SSLInsecureSkipVerify = environments.GetBool("HELLNET_KAFKA_", "", "SSL_INSECURE_SKIP_VERIFY", base.SSLInsecureSkipVerify)
 	o.Idempotent = environments.GetBool("HELLNET_KAFKA_", "", "IDEMPOTENT", base.Idempotent)
 	o.MaxRetries = environments.GetInt("HELLNET_KAFKA_", "", "MAX_RETRIES", base.MaxRetries)
-	o.RetryDelay = environments.GetDuration("HELLNET_KAFKA_", "", "RETRY_DELAY_MS", base.RetryDelay)
-	o.TimeoutProduce = environments.GetDuration("HELLNET_KAFKA_", "", "TIMEOUT_PRODUCE_MS", base.TimeoutProduce)
+	// GetDuration cannot parse bare integers ("30000"), so millisecond-suffixed
+	// knobs are read through GetInt × time.Millisecond — same convention as
+	// hellnet-lib-cache.
+	o.RetryDelay = time.Duration(environments.GetInt("HELLNET_KAFKA_", "",
+		"RETRY_DELAY_MS", int(base.RetryDelay/time.Millisecond))) * time.Millisecond
+	o.TimeoutProduce = time.Duration(environments.GetInt("HELLNET_KAFKA_", "",
+		"TIMEOUT_PRODUCE_MS", int(base.TimeoutProduce/time.Millisecond))) * time.Millisecond
 	o.CircuitBreakerCount = environments.GetInt("HELLNET_KAFKA_", "", "CIRCUIT_BREAKER_COUNT", base.CircuitBreakerCount)
 	o.DeadLetterTopic = environments.GetString("HELLNET_KAFKA_", "", "DEAD_LETTER_TOPIC", base.DeadLetterTopic)
 	o.DefaultSerializer = environments.GetString("HELLNET_KAFKA_", "", "DEFAULT_SERIALIZER", base.DefaultSerializer)
@@ -152,8 +157,11 @@ func (o *Options) validate() error {
 }
 
 // buildSerializer selects the serializer per DefaultSerializer ("json" or
-// "avro"). Avro requires a Schema Registry URL (hellnet-lib-schema).
-func (o *Options) buildSerializer() (Serializer, error) {
+// "avro"). Avro requires a Schema Registry URL (hellnet-lib-schema). The ctx
+// becomes the registry client's base context: schema fetches derive their
+// timeout budget from it, so cancelling the ctx captured at construction also
+// aborts in-flight registry lookups.
+func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
 	switch o.DefaultSerializer {
 	case "", "json":
 		return JSONSerializer{}, nil
@@ -161,24 +169,24 @@ func (o *Options) buildSerializer() (Serializer, error) {
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
 		}
-		return NewAvroSerializer(o.SchemaRegistryURL, o.SchemaRegistryPath)
+		return &AvroSerializer{registry: newRegistryClient(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath)}, nil
 	case "protobuf":
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
 		}
-		return NewProtobufSerializer(o.SchemaRegistryURL, o.SchemaRegistryPath)
+		return &ProtobufSerializer{registry: newRegistryClient(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath)}, nil
 	default:
 		return nil, fmt.Errorf("kafka: unsupported HELLNET_KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
 	}
 }
 
 // ensureSerializer returns the configured serializer, building it from
-// DefaultSerializer when nil.
-func (o *Options) ensureSerializer() (Serializer, error) {
+// DefaultSerializer when nil. baseCtx is threaded into the registry client.
+func (o *Options) ensureSerializer(baseCtx context.Context) (Serializer, error) {
 	if o.Serializer != nil {
 		return o.Serializer, nil
 	}
-	return o.buildSerializer()
+	return o.buildSerializer(baseCtx)
 }
 
 // New loads env (.env + HELLNET_KAFKA_*) and builds a ready-to-use Bus. The
@@ -201,7 +209,7 @@ func New(ctx context.Context, opts ...Options) (*Bus, error) {
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	s, err := o.buildSerializer()
+	s, err := o.buildSerializer(ctx)
 	if err != nil {
 		return nil, err
 	}
