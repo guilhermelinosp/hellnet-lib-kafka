@@ -11,11 +11,11 @@
 | Hellnet.Kafka (.NET) | hellnet-lib-kafka (Go) |
 |---|---|
 | `IMessage.MessageType` | `Message.MessageType() string` |
-| `IMessageBus.PublishAsync` | `Producer[T].Publish` / `PublishContext` |
+| `IMessageBus.PublishAsync` | `Producer[T].Publish` |
 | `IMessageHandler<T>.HandleAsync` | `Handler[T].Handle(ctx, msg, Ctx)` |
 | `IMessageContext` | `Ctx{Topic, Partition, Offset, Key}` |
 | `MessageHandlerAttribute` | `HandlerSpec{Topic, Group, MaxRetries}` |
-| `AddHellnetKafka()` (DI) | `kafka.NewProducer[T]()` / `kafka.NewConsumer[T](h, spec, opts...)` |
+| `AddHellnetKafka()` (DI) | `kafka.NewProducer[T](ctx)` / `kafka.NewConsumer[T](ctx, h, spec, opts...)` |
 | Confluent.Kafka + Polly | `segmentio/kafka-go` + `sony/gobreaker` |
 | `AvroMessageSerializer` | `kafka.AvroSerializer` (wire format Confluent) |
 | `ProtobufMessageSerializer` | `kafka.ProtobufSerializer` (wire format Confluent) |
@@ -28,7 +28,7 @@
 - **3 serializers** — JSON, Avro e Protobuf (Schema Registry, wire format Confluent)
 - **Resiliência** — timeout → retry exponencial → circuit breaker (produce)
 - **Dead Letter Queue** — handler falhou após `MaxRetries` → `{topic}.dlq` com headers `dlq.*`
-- **`ctx` default background** — métodos simples (`Publish`, `Run`) + variantes `*Context`
+- **`ctx` uma vez na construção** — `New(ctx)`/`NewProducer(ctx)`/`NewConsumer(ctx, ...)` capturam o contexto e propagam internamente; apps **nunca** passam ctx às operações (`Publish`, `Run`, `Close`)
 - **Apicurio e Redpanda** — SR com caminho configurável (`/apis/ccompat/v6` ou raiz)
 
 ## Quick start (generics como abstração)
@@ -39,6 +39,8 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+	"os/signal"
 
 	"github.com/guilhermelinosp/hellnet-lib-kafka/kafka"
 )
@@ -58,8 +60,12 @@ func (orderHandler) Handle(ctx context.Context, msg orderCreated, mctx kafka.Ctx
 }
 
 func main() {
+	// Contexto passado UMA vez, na construção (Ctrl-C encerra cooperativamente).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	// Producer tipado pelo tipo da mensagem (env-first; lê HELLNET_KAFKA_* via .env).
-	prod, err := kafka.NewProducer[orderCreated]()
+	prod, err := kafka.NewProducer[orderCreated](ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -69,12 +75,12 @@ func main() {
 	}
 
 	// Consumer tipado pelo handler (env-first; opts opcionais).
-	cons, err := kafka.NewConsumer(orderHandler{}, kafka.HandlerSpec{})
+	cons, err := kafka.NewConsumer(ctx, orderHandler{}, kafka.HandlerSpec{})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer cons.Close()
-	_ = cons.RunContext(context.Background())
+	_ = cons.Run() // bloqueia até Close()/cancelamento do ctx capturado
 }
 ```
 
@@ -93,19 +99,17 @@ Use `HandlerSpec.Topic` para sobrescrever.
 ### Producer[T]
 
 ```go
-prod, _ := kafka.NewProducer[orderCreated](opts ...Options) // env-first; opts opcionais
-prod.Publish(msg)                 // usa context.Background() internamente
-prod.PublishContext(ctx, msg)     // com cancelamento/deadline
+prod, _ := kafka.NewProducer[orderCreated](ctx) // env-first; ctx capturado uma vez
+prod.Publish(msg)                 // usa o ctx capturado (timeout por attempt internamente)
 prod.Close()
 ```
 
 ### Consumer[T]
 
 ```go
-cons, _ := kafka.NewConsumer[T](handler, HandlerSpec{}, opts ...Options) // env-first
-cons.Run()                         // background; bloqueia até Close/erro
-cons.RunContext(ctx)               // com cancelamento/deadline
-cons.Close()
+cons, _ := kafka.NewConsumer[T](ctx, handler, HandlerSpec{}, opts ...Options) // env-first; ctx capturado uma vez
+cons.Run()                         // bloqueia até Close()/cancelamento do ctx capturado
+cons.Close()                       // cancela o run ctx interno e libera reader/bus
 ```
 
 ### Handler[T] e HandlerSpec
@@ -115,6 +119,10 @@ type Handler[T Message] interface {
 	Handle(ctx context.Context, msg T, mctx Ctx) error
 }
 type HandlerFunc[T Message] func(ctx context.Context, msg T, mctx Ctx) error
+
+// O ctx de Handle é fornecido pela biblioteca: derivado do contexto passado
+// em NewConsumer(...) + cancelamento do run loop. Usado para shutdown
+// cooperativo — a aplicação nunca o passa manualmente.
 
 type HandlerSpec struct {
 	Topic      string // sobrescreve "{prefix}.{messageType}"
@@ -138,9 +146,8 @@ type Ctx struct {
 
 Para publicar **vários tipos** de mensagem pelo mesmo connection:
 ```go
-bus, _ := kafka.New(opts ...Options) // env-first
-bus.Publish(msg)                     // msg: Message
-bus.PublishContext(ctx, msg)
+bus, _ := kafka.New(ctx, opts ...Options) // env-first; ctx capturado uma vez
+bus.Publish(msg)                          // msg: Message
 bus.Close()
 ```
 

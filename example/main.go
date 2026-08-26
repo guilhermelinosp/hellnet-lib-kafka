@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/guilhermelinosp/hellnet-lib-kafka/kafka"
@@ -57,10 +58,13 @@ func (orderHandler) Handle(_ context.Context, msg orderCreated, mctx kafka.Ctx) 
 }
 
 func main() {
-	ctx := context.Background()
+	// Contexto passado UMA vez na construção e propagado internamente pela lib:
+	// Publish/Run/Close nunca recebem ctx. Ctrl-C encerra cooperativamente.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 
 	// Producer[T]: generics como abstração — tipado pelo tipo da mensagem.
-	prod, err := kafka.NewProducer[orderCreated]()
+	prod, err := kafka.NewProducer[orderCreated](ctx)
 	if err != nil {
 		log.Fatalf("kafka.NewProducer: %v", err)
 	}
@@ -84,16 +88,17 @@ func main() {
 		log.Printf("published %s -> hellnet.order.created.v1", msg.OrderID)
 	}
 
-	// Consumer[T]: env-first, tipado pelo handler.
-	cons, err := kafka.NewConsumer(orderHandler{}, kafka.HandlerSpec{})
+	// Consumer[T]: env-first, tipado pelo handler. O budget de 20s da demo é um
+	// derivado do ctx-base capturado na construção; Run deriva seu run ctx daí.
+	runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	cons, err := kafka.NewConsumer(runCtx, orderHandler{}, kafka.HandlerSpec{})
 	if err != nil {
 		log.Fatalf("NewConsumer: %v", err)
 	}
 	defer func() { _ = cons.Close() }()
 
-	rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	if err := cons.RunContext(rctx); err != nil {
+	if err := cons.Run(); err != nil {
 		log.Printf("consumer run ended: %v", err)
 	}
 	log.Println("done")

@@ -180,7 +180,7 @@ func TestKafkaProtobufE2E(t *testing.T) {
 	opts := kafka.LoadFromEnv()
 	opts.DefaultSerializer = "protobuf"
 
-	prod, err := kafka.NewProducer[*stockMessage](opts)
+	prod, err := kafka.NewProducer[*stockMessage](context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,15 +210,15 @@ func TestKafkaProtobufE2E(t *testing.T) {
 		return nil
 	})
 	opts.ConsumerGroup = "hellnet.test.protobuf." + time.Now().Format("150405")
-	cons, err := kafka.NewConsumer[*stockMessage](h, kafka.HandlerSpec{}, opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cons, err := kafka.NewConsumer[*stockMessage](ctx, h, kafka.HandlerSpec{}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cons.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
-	go func() { _ = cons.RunContext(ctx) }()
+	go func() { _ = cons.Run() }()
 
 	select {
 	case err := <-done:
@@ -237,7 +237,7 @@ func runE2E[T kafka.Message](t *testing.T, serializer string, want T, assert fun
 	opts := kafka.LoadFromEnv()
 	opts.DefaultSerializer = serializer
 
-	prod, err := kafka.NewProducer[T](opts)
+	prod, err := kafka.NewProducer[T](context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,15 +254,15 @@ func runE2E[T kafka.Message](t *testing.T, serializer string, want T, assert fun
 		return nil
 	})
 	opts.ConsumerGroup = "hellnet.test.e2e." + serializer + "." + time.Now().Format("150405")
-	cons, err := kafka.NewConsumer[T](h, kafka.HandlerSpec{}, opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	cons, err := kafka.NewConsumer[T](ctx, h, kafka.HandlerSpec{}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cons.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	go func() { _ = cons.RunContext(ctx) }()
+	go func() { _ = cons.Run() }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -305,7 +305,7 @@ func runDLQ[T kafka.Message](t *testing.T, serializer string, want T, id, dlqTop
 	opts.MaxRetries = 2
 	opts.RetryDelay = 100 * time.Millisecond
 
-	prod, err := kafka.NewProducer[T](opts)
+	prod, err := kafka.NewProducer[T](context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,14 +315,14 @@ func runDLQ[T kafka.Message](t *testing.T, serializer string, want T, id, dlqTop
 	}
 
 	opts.ConsumerGroup = "hellnet.test.dlq." + serializer + "." + id
-	cons, err := kafka.NewConsumer[T](failingHandler[T]{}, kafka.HandlerSpec{}, opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cons, err := kafka.NewConsumer[T](ctx, failingHandler[T]{}, kafka.HandlerSpec{}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cons.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
-	go func() { _ = cons.RunContext(ctx) }()
+	go func() { _ = cons.Run() }()
 
 	r := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:        opts.Brokers,
@@ -403,7 +403,7 @@ func TestKafkaRetryDLQ(t *testing.T) {
 	opts.MaxRetries = 2
 	opts.RetryDelay = 100 * time.Millisecond
 
-	bus, err := kafka.New(opts)
+	bus, err := kafka.New(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,16 +417,16 @@ func TestKafkaRetryDLQ(t *testing.T) {
 
 	// consumer whose handler always fails -> retries -> DLQ
 	opts.ConsumerGroup = "hellnet.test.dlq." + id
-	cons, err := kafka.NewConsumer[orderCreated](failHandler{t: t}, kafka.HandlerSpec{}, opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cons, err := kafka.NewConsumer[orderCreated](ctx, failHandler{t: t}, kafka.HandlerSpec{}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cons.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
 	go func() {
-		if err := cons.RunContext(ctx); err != nil {
-			t.Logf("consumer RunContext ended: %v", err)
+		if err := cons.Run(); err != nil {
+			t.Logf("consumer Run ended: %v", err)
 		}
 	}()
 

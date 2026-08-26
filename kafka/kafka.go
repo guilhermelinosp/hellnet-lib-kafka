@@ -11,8 +11,10 @@
 // It features env-first configuration (HELLNET_KAFKA_* via .env through
 // hellnet-lib-environments), three serializers (JSON, Avro and Protobuf with
 // Schema Registry and the Confluent wire format), timeout/retry/circuit
-// breaker on produce, and graceful degradation. Entry points: New, NewProducer
-// and NewConsumer are env-first with optional explicit Options.
+// breaker on produce, and graceful degradation. Entry points New, MustNew,
+// NewProducer and NewConsumer are env-first with optional explicit Options and
+// capture a context ONCE at construction: it is stored as the base context and
+// propagated internally — applications never pass ctx to operations.
 package kafka
 
 import (
@@ -135,6 +137,9 @@ func (o *Options) validate() error {
 	if o.MaxRetries < 1 {
 		return fmt.Errorf("kafka: HELLNET_KAFKA_MAX_RETRIES must be >= 1")
 	}
+	if o.CircuitBreakerCount < 1 {
+		return fmt.Errorf("kafka: HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT must be >= 1")
+	}
 	switch o.SecurityProtocol {
 	case "plaintext", "ssl", "sasl_plaintext", "sasl_ssl":
 	default:
@@ -176,11 +181,18 @@ func (o *Options) ensureSerializer() (Serializer, error) {
 	return o.buildSerializer()
 }
 
-// New loads env (.env + HELLNET_KAFKA_*) and builds a ready-to-use Bus.
-// Explicit opts override the environment when provided (useful in tests and
-// embedded contexts), mirroring hellnet-lib-cache/telemetry. A consumer group
-// is only required if a consumer will be started.
-func New(opts ...Options) (*Bus, error) {
+// New loads env (.env + HELLNET_KAFKA_*) and builds a ready-to-use Bus. The
+// context is captured once here (stored as the Bus base context) and
+// propagated internally: every operation derives its per-attempt contexts
+// (produce timeouts, cancellation) from it — applications never pass ctx to
+// operations. Cancelling ctx stops in-flight work cooperatively. Explicit opts
+// override the environment when provided (useful in tests and embedded
+// contexts), mirroring hellnet-lib-cache/telemetry. A consumer group is only
+// required if a consumer will be started.
+func New(ctx context.Context, opts ...Options) (*Bus, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	loadEnvFiles()
 	o := LoadFromEnv()
 	if len(opts) > 0 {
@@ -194,7 +206,16 @@ func New(opts ...Options) (*Bus, error) {
 		return nil, err
 	}
 	o.Serializer = s
-	return newBus(o)
+	return newBus(ctx, o)
+}
+
+// MustNew is like New but panics if construction fails.
+func MustNew(ctx context.Context, opts ...Options) *Bus {
+	b, err := New(ctx, opts...)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }
 
 // TopicName resolves the topic for a message type: "{prefix}.{messageType}".
@@ -223,5 +244,3 @@ func (s HandlerSpec) resolveTopic(o Options, messageType string) string {
 	}
 	return TopicName(o, messageType)
 }
-
-var _ = context.Background

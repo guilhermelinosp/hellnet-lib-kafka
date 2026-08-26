@@ -66,13 +66,19 @@ func (c *registryClient) get(path string, out any) error {
 	return json.Unmarshal(body, out)
 }
 
-// latestSchema returns the latest schema string and id for a subject.
-func (c *registryClient) latestSchema(subject string) (string, int, error) {
+// latestSchema returns the latest schema string and id for a subject. The id
+// is already uint32 (Confluent wire-format width); non-negative ids are the
+// only values a compliant registry returns.
+func (c *registryClient) latestSchema(subject string) (string, uint32, error) {
 	var sr schemaResponse
 	if err := c.get(c.path+"/subjects/"+urlPathEscape(subject)+"/versions/latest", &sr); err != nil {
 		return "", 0, err
 	}
-	return sr.Schema, sr.ID, nil
+	if sr.ID < 0 {
+		return "", 0, fmt.Errorf("kafka: schema registry %s: invalid schema id %d", subject, sr.ID)
+	}
+	id := uint32(sr.ID) //nolint:gosec // G115: guarded by sr.ID < 0 above.
+	return sr.Schema, id, nil
 }
 
 // schemaByID returns the schema string for a global schema id.

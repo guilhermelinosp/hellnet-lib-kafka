@@ -20,8 +20,12 @@ type Ctx struct {
 	Key       []byte
 }
 
-// Handler processes a message of type T. Implementations must be safe for
-// concurrent use (the consumer may invoke Handle from one goroutine at a time).
+// Handler processes a message of type T. The ctx argument is supplied by the
+// library — derived from the context given at New(...)/NewConsumer(...),
+// including the consumer's run-loop cancelation — and is used for cooperative
+// shutdown of long-running Handle bodies; applications never pass it in.
+// Implementations must be safe for concurrent use (the consumer may invoke
+// Handle from one goroutine at a time).
 type Handler[T Message] interface {
 	Handle(ctx context.Context, msg T, mctx Ctx) error
 }
@@ -29,7 +33,7 @@ type Handler[T Message] interface {
 // HandlerFunc adapts a plain function to Handler.
 type HandlerFunc[T Message] func(ctx context.Context, msg T, mctx Ctx) error
 
-// Handle implements Handler.
+// Handle implements Handler. The ctx is supplied by the library (see Handler).
 func (f HandlerFunc[T]) Handle(ctx context.Context, msg T, mctx Ctx) error {
 	return f(ctx, msg, mctx)
 }

@@ -7,14 +7,22 @@ import (
 
 // Producer is a type-safe producer bound to a single message type T — generics
 // as the abstraction. The topic is derived from T.MessageType, and the
-// serializer is selected from the options (json|avro|protobuf).
+// serializer is selected from the options (json|avro|protobuf). The context is
+// captured once at NewProducer and propagated internally; applications never
+// pass ctx to operations.
 type Producer[T Message] struct {
 	bus *Bus
 }
 
 // NewProducer loads env (HELLNET_KAFKA_* via .env) and builds a typed producer
-// for T. Explicit opts override the environment when provided.
-func NewProducer[T Message](opts ...Options) (*Producer[T], error) {
+// for T. The context is captured once here (stored as the Bus base context):
+// every Publish derives its per-attempt produce timeout from it, so callers
+// never pass ctx to operations. Explicit opts override the environment when
+// provided.
+func NewProducer[T Message](ctx context.Context, opts ...Options) (*Producer[T], error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	loadEnvFiles()
 	o := LoadFromEnv()
 	if len(opts) > 0 {
@@ -28,23 +36,18 @@ func NewProducer[T Message](opts ...Options) (*Producer[T], error) {
 		return nil, err
 	}
 	o.Serializer = s
-	bus, err := newBus(o)
+	bus, err := newBus(ctx, o)
 	if err != nil {
 		return nil, err
 	}
 	return &Producer[T]{bus: bus}, nil
 }
 
-// Publish produces msg to "{prefix}.{messageType}" using a default (background)
-// context — mirroring hellnet-lib-cache. Use PublishContext for
-// cancellation/deadline control.
+// Publish produces msg to "{prefix}.{messageType}". The context captured at
+// NewProducer is used internally (each attempt bounded by TimeoutProduce);
+// applications never pass ctx to operations.
 func (p *Producer[T]) Publish(msg T) error {
 	return p.bus.Publish(msg)
-}
-
-// PublishContext produces msg with a caller-supplied context.
-func (p *Producer[T]) PublishContext(ctx context.Context, msg T) error {
-	return p.bus.PublishContext(ctx, msg)
 }
 
 // Close releases the underlying connection.
