@@ -18,3 +18,5 @@
 # Go
 /bin/
 /coverage.out
+# Examples (demo only — local, not shipped / not committed)
+example/
