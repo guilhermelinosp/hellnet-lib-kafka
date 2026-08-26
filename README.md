@@ -6,6 +6,61 @@
 > A abstração é o **tipo da mensagem `T`** (generics): `Producer[T]`, `Consumer[T]`,
 > `Handler[T]`.
 
+## 🧒 Entenda com 15 anos
+
+**A analogia** — imagine a **pa** (quadro de avisos) da escola: isso é o **Kafka**
+(Redpanda é a mesma coisa, só muda a marca). Tem um recado pra dar pra outra turma?
+Clipa o papel na pa e o monitor da outra sala pega quando pode. O quadro de avisos
+em si é o que chamam de **broker**.
+
+As peças da escola:
+
+- **Tópico** = uma fileira da pa com etiqueta (ex.: `"pedidos"`).
+- **Producer** = quem clipa o recado na fileira.
+- **Consumer** = o monitor que retira o recado e age conforme ele.
+- **Handler** = o manual que diz ao monitor o que fazer com cada tipo de recado.
+- **DLQ** (*Dead Letter Queue*) = a gaveta "não entendi / deu erro", pra ninguém
+  perder um recado problemático.
+- **Consumer group** = vários monitores dividindo a mesma fileira — cada recado
+  é lido por UM deles.
+
+**O problema que resolve:**
+
+- Apps conversam **sem saber um do outro** — não precisa correr até a outra sala:
+  clipou na pa, fim de papo.
+- Se o app da outra ponta estiver **dormindo**, o recado **espera** na fileira até
+  alguém retirar.
+- A lib cuida do trabalho chato: **reenviar** quando dá erro, **etiquetar** certinho
+  e **transformar** mensagens (JSON/Avro/protobuf).
+
+**Mini-dicionário:**
+
+| Termo | Significado simples |
+|---|---|
+| Tópico | Fileira da pa com etiqueta (`"pedidos"`, `"estoque"`…) |
+| Producer | Quem clipa o recado |
+| Consumer | O monitor que retira e age conforme o recado |
+| Handler | O manual: o que fazer com cada tipo de recado |
+| Consumer group | Vários monitores dividindo a mesma fileira; cada recado lido por UM |
+| Broker | O quadro de avisos em si (servidor Kafka ou Redpanda) |
+| At-least-once | Pode chegar repetido, mas **nunca se perde** — como enviar a foto duas vezes pro grupo pra garantir |
+| Schema | Molde/recorte que garante que todo recado tem os campos certos |
+
+**Suas primeiras linhas:**
+
+```go
+ctx := context.Background() // passado UMA VEZ
+prod, _ := kafka.NewProducer[MeuEvento](ctx)
+cons, _ := kafka.NewConsumer[MeuEvento](ctx, handler, spec)
+```
+
+- **Linha 1** — cria um contexto genérico: pense nele como o interruptor geral da
+  aplicação. É passado **uma vez**, aqui, e depois quem administra é a própria lib.
+- **Linha 2** — fabrica o producer (quem clipa recados) especializado no tipo
+  `MeuEvento`; a configuração vem das variáveis `HELLNET_KAFKA_*`, sem escrever nada à mão.
+- **Linha 3** — fabrica o consumer (o monitor) que usa o `handler` (o manual) para
+  processar cada `MeuEvento`, lendo da fileira descrita pelo `spec`.
+
 ## De-para (.NET → Go)
 
 | Hellnet.Kafka (.NET) | hellnet-lib-kafka (Go) |
@@ -32,6 +87,8 @@
 - **Apicurio e Redpanda** — SR com caminho configurável (`/apis/ccompat/v6` ou raiz)
 
 ## Quick start (generics como abstração)
+
+> 🧒 Em termos de escola: vamos clipar nosso primeiro recado na pa e contratar o primeiro monitor.
 
 ```go
 package main
@@ -153,6 +210,8 @@ bus.Close()
 
 ## Serialização
 
+> 🧒 Serializer é o **molde de recados**: todo recado precisa sair com o formato certo (JSON, Avro ou Protobuf).
+
 `HELLNET_KAFKA_DEFAULT_SERIALIZER` seleciona o formato. Para avro/protobuf, o
 `HELLNET_KAFKA_SCHEMA_REGISTRY_URL` é obrigatório e o schema deve estar registrado
 no subject `{topic}-value`.
@@ -188,6 +247,8 @@ Wire format Confluent idêntico ao Avro.
 
 ## Resiliência e DLQ
 
+> 🧒 Quando um recado dá problema, tentamos de novo algumas vezes antes de arquivá-lo na **gaveta dos erros** (DLQ).
+
 - **Produce**: `Timeout (HELLNET_KAFKA_TIMEOUT_PRODUCE_MS)` → circuit breaker
   (`HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT` falhas → OPEN → half-open → CLOSED).
 - **Consumer**: handler com retry exponencial (`MaxRetries` + `HELLNET_KAFKA_RETRY_DELAY_MS`).
@@ -195,6 +256,8 @@ Wire format Confluent idêntico ao Avro.
   - `dlq.reason` · `dlq.original.topic` · `dlq.original.partition` · `dlq.original.offset`
 
 ## Semântica de entrega (at-least-once)
+
+> 🧒 At-least-once = pode chegar repetido, mas nunca se perde — como mandar a foto duas vezes no grupo pra garantir.
 
 - **At-least-once**: o offset é commitado depois do sucesso (ou DLQ) da
   mensagem, e o grupo usa `CommitInterval` de 1s. Uma mensagem pode ser
