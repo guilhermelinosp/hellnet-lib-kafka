@@ -19,7 +19,7 @@ func backoff(base time.Duration, attempt int) time.Duration {
 		d = 10 * time.Millisecond
 	}
 	// ±20% jitter to avoid thundering herds.
-	jitter := time.Duration(rand.Int63n(int64(d/5)*2+1)) - d/5
+	jitter := time.Duration(rand.Int63n(int64(d/5)*2+1)) - d/5 //nolint:gosec // jitter for backoff; not security-sensitive
 	return d + jitter
 }
 

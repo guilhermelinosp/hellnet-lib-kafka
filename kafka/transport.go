@@ -38,7 +38,7 @@ func newDialer(o Options) *kafka.Dialer {
 
 // buildTLS builds a tls.Config from HELLNET_KAFKA_SSL_* options.
 func buildTLS(o Options) (*tls.Config, error) {
-	cfg := &tls.Config{InsecureSkipVerify: o.SSLInsecureSkipVerify}
+	cfg := &tls.Config{InsecureSkipVerify: o.SSLInsecureSkipVerify} //nolint:gosec // controlled by user option HELLNET_KAFKA_SSL_INSECURE_SKIP_VERIFY
 	if o.SSLCA != "" {
 		pem, err := os.ReadFile(o.SSLCA)
 		if err != nil {
