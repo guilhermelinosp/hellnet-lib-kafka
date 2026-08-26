@@ -49,7 +49,7 @@ func newBus(opts Options) (*Bus, error) {
 	b.breaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name: "kafka-produce",
 		ReadyToTrip: func(c gobreaker.Counts) bool {
-			return c.ConsecutiveFailures >= uint32(opts.CircuitBreakerCount)
+			return c.ConsecutiveFailures >= uint32(opts.CircuitBreakerCount) //nolint:gosec // count is non-negative
 		},
 	})
 	return b, nil

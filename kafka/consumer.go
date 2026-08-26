@@ -121,12 +121,12 @@ func (c *Consumer[T]) RunContext(ctx context.Context) error {
 		// For pointer message types (the natural Go/protobuf style), allocate
 		// and pass the pointer itself — serializers expect the message, not a
 		// **T. Value types keep the addressable &msg.
-		if t := reflect.TypeOf(msg); t != nil && t.Kind() == reflect.Ptr {
+		if t := reflect.TypeOf(msg); t != nil && t.Kind() == reflect.Pointer {
 			msg = reflect.New(t.Elem()).Interface().(T)
 			out = any(msg)
 		}
 		if err := c.serializer.Deserialize(m.Topic, m.Value, out); err != nil {
-			_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, int64(m.Offset),
+			_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, m.Offset,
 				"deserialize: "+err.Error(), m.Value)
 			_ = c.reader.CommitMessages(ctx, m)
 			continue
@@ -142,7 +142,7 @@ func (c *Consumer[T]) RunContext(ctx context.Context) error {
 			lastErr = c.handler.Handle(ctx, msg, Ctx{
 				Topic:     m.Topic,
 				Partition: m.Partition,
-				Offset:    int64(m.Offset),
+				Offset:    m.Offset,
 				Key:       m.Key,
 			})
 			if lastErr == nil {
@@ -150,7 +150,7 @@ func (c *Consumer[T]) RunContext(ctx context.Context) error {
 			}
 		}
 		if lastErr != nil {
-			_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, int64(m.Offset), lastErr.Error(), m.Value)
+			_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, m.Offset, lastErr.Error(), m.Value)
 		}
 		if err := c.reader.CommitMessages(ctx, m); err != nil {
 			return fmt.Errorf("kafka: commit: %w", err)

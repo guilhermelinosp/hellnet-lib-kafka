@@ -64,7 +64,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("kafka.NewProducer: %v", err)
 	}
-	defer prod.Close()
+	defer func() { _ = prod.Close() }()
 
 	for i := 0; i < 3; i++ {
 		msg := orderCreated{
@@ -89,7 +89,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("NewConsumer: %v", err)
 	}
-	defer cons.Close()
+	defer func() { _ = cons.Close() }()
 
 	rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()

@@ -105,7 +105,7 @@ func hellnetStockProto(t *testing.T) string {
 //	go test ./example -run "RoundTrip|E2E" -v
 
 type jsonMessage struct {
-	OrderID string `json:"orderId"`
+	OrderID string  `json:"orderId"`
 	Total   float64 `json:"total"`
 }
 
@@ -229,7 +229,6 @@ func TestKafkaProtobufE2E(t *testing.T) {
 		t.Fatal("timeout waiting for protobuf message")
 	}
 }
-
 
 // --- matriz completa: E2E e DLQ para json/avro/protobuf -------------------
 
@@ -377,7 +376,6 @@ func TestKafkaRetryDLQProtobuf(t *testing.T) {
 	sm.StockUpdated.Quantity = 3
 	runDLQ(t, "protobuf", sm, "DLQP-1", "hellnet.stock.updated.v1.dlq")
 }
-
 
 // failHandler always fails so the consumer retries and then DLQs.
 type failHandler struct {

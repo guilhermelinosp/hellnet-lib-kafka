@@ -68,20 +68,20 @@ type Options struct {
 // Default returns the Hellnet defaults for Options.
 func Default() Options {
 	return Options{
-		Brokers:              []string{"kafka.hellnet.com.br:9094"},
-		ConsumerGroup:        "",
-		TopicPrefix:          "hellnet",
-		SecurityProtocol:     "sasl_ssl",
-		SASLMechanism:        "SCRAM-SHA-512",
-		SASLUsername:         "hellnet-app",
-		Idempotent:           true,
-		MaxRetries:           3,
-		RetryDelay:           200 * time.Millisecond,
-		TimeoutProduce:       30 * time.Second,
-		CircuitBreakerCount:  5,
-		DeadLetterTopic:      "",
-		DefaultSerializer:    "json",
-		SchemaRegistryPath:   "/apis/ccompat/v6",
+		Brokers:             []string{"kafka.hellnet.com.br:9094"},
+		ConsumerGroup:       "",
+		TopicPrefix:         "hellnet",
+		SecurityProtocol:    "sasl_ssl",
+		SASLMechanism:       "SCRAM-SHA-512",
+		SASLUsername:        "hellnet-app",
+		Idempotent:          true,
+		MaxRetries:          3,
+		RetryDelay:          200 * time.Millisecond,
+		TimeoutProduce:      30 * time.Second,
+		CircuitBreakerCount: 5,
+		DeadLetterTopic:     "",
+		DefaultSerializer:   "json",
+		SchemaRegistryPath:  "/apis/ccompat/v6",
 	}
 }
 
