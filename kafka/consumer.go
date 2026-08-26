@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"time"
 
@@ -71,7 +72,7 @@ func NewConsumer[T Message](ctx context.Context, h Handler[T], spec HandlerSpec,
 	if err != nil {
 		return nil, err
 	}
-	serializer, err := o.ensureSerializer()
+	serializer, err := o.ensureSerializer(ctx)
 	if err != nil {
 		_ = bus.Close()
 		return nil, err
@@ -114,64 +115,99 @@ func NewConsumer[T Message](ctx context.Context, h Handler[T], spec HandlerSpec,
 // unrecoverable error occurs, or the reader fails. It commits offsets after
 // each successful or DLQ'd batch.
 //
+// Shutdown contract: cancellation/shutdown paths always return nil — context
+// cancellation during FetchMessage, during a backoff sleep, or a commit that
+// races shutdown. Errors observed while still running (e.g. a real broker
+// commit failure) are returned as errors.
+//
 // The run context is supplied by the library (derived once from the context
 // given at NewConsumer); applications never pass ctx to operations.
 func (c *Consumer[T]) Run() error {
 	ctx := c.runCtx
+	var fetchFails int // consecutive transient fetch failures for backoff
 	for {
 		m, err := c.reader.FetchMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return nil
-			}
-			// Transient fetch errors (rebalance, leader changes, network):
-			// back off briefly and keep consuming instead of dying silently.
-			if err := sleepCtx(ctx, 200*time.Millisecond); err != nil {
-				return nil
+		if err == nil {
+			fetchFails = 0 // healthy fetch: reset the escalating backoff
+			if perr := c.processMessage(ctx, m); perr != nil {
+				return perr
 			}
 			continue
 		}
-
-		var msg T
-		out := any(&msg)
-		// For pointer message types (the natural Go/protobuf style), allocate
-		// and pass the pointer itself — serializers expect the message, not a
-		// **T. Value types keep the addressable &msg.
-		if t := reflect.TypeOf(msg); t != nil && t.Kind() == reflect.Pointer {
-			msg = reflect.New(t.Elem()).Interface().(T)
-			out = any(msg)
+		if isCtxErr(err) {
+			return nil
 		}
-		if err := c.serializer.Deserialize(m.Topic, m.Value, out); err != nil {
-			_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, m.Offset,
-				"deserialize: "+err.Error(), m.Value)
-			_ = c.reader.CommitMessages(ctx, m)
-			continue
-		}
-
-		var lastErr error
-		for attempt := 0; attempt < c.maxRetries; attempt++ {
-			if attempt > 0 {
-				if err := sleepCtx(ctx, backoff(c.opts.RetryDelay, attempt-1)); err != nil {
-					return err
-				}
-			}
-			lastErr = c.handler.Handle(ctx, msg, Ctx{
-				Topic:     m.Topic,
-				Partition: m.Partition,
-				Offset:    m.Offset,
-				Key:       m.Key,
-			})
-			if lastErr == nil {
-				break
-			}
-		}
-		if lastErr != nil {
-			_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, m.Offset, lastErr.Error(), m.Value)
-		}
-		if err := c.reader.CommitMessages(ctx, m); err != nil {
-			return fmt.Errorf("kafka: commit: %w", err)
+		// Transient fetch errors (rebalance, leader changes, network): log,
+		// escalate the capped backoff and keep consuming instead of dying
+		// silently.
+		fetchFails++
+		slog.Warn("kafka: transient fetch error; retrying",
+			slog.String("topic", c.topic),
+			slog.String("group", c.group),
+			slog.Int("consecutive_failures", fetchFails),
+			slog.Any("error", err))
+		if !c.sleepThroughShutdown(ctx, fetchBackoff(fetchFails-1)) {
+			return nil // shutdown during backoff
 		}
 	}
+}
+
+// processMessage deserializes one fetched message, runs the handler with
+// retries (exponential backoff), lands it in the DLQ when retries are
+// exhausted, and commits the offset. The returned error is fatal to Run.
+func (c *Consumer[T]) processMessage(ctx context.Context, m kafka.Message) error {
+	var msg T
+	out := any(&msg)
+	// For pointer message types (the natural Go/protobuf style), allocate
+	// and pass the pointer itself — serializers expect the message, not a
+	// **T. Value types keep the addressable &msg.
+	if t := reflect.TypeOf(msg); t != nil && t.Kind() == reflect.Pointer {
+		msg = reflect.New(t.Elem()).Interface().(T)
+		out = any(msg)
+	}
+	if err := c.serializer.Deserialize(m.Topic, m.Value, out); err != nil {
+		_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, m.Offset,
+			"deserialize: "+err.Error(), m.Value)
+		_ = c.reader.CommitMessages(ctx, m)
+		return nil
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < c.maxRetries; attempt++ {
+		if attempt > 0 && !c.sleepThroughShutdown(ctx, backoff(c.opts.RetryDelay, attempt-1)) {
+			return nil // shutdown during handler-retry backoff
+		}
+		lastErr = c.handler.Handle(ctx, msg, Ctx{
+			Topic:     m.Topic,
+			Partition: m.Partition,
+			Offset:    m.Offset,
+			Key:       m.Key,
+		})
+		if lastErr == nil {
+			break
+		}
+	}
+	if lastErr != nil {
+		_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, m.Offset, lastErr.Error(), m.Value)
+	}
+	if err := c.reader.CommitMessages(ctx, m); err != nil {
+		if ctx.Err() != nil {
+			return nil // commit raced shutdown: cooperative stop, not an error
+		}
+		return fmt.Errorf("kafka: commit: %w", err)
+	}
+	return nil
+}
+
+// sleepThroughShutdown sleeps for d; false means the run context ended while
+// sleeping — the caller must treat it as cooperative shutdown.
+func (c *Consumer[T]) sleepThroughShutdown(ctx context.Context, d time.Duration) bool {
+	return sleepCtx(ctx, d) == nil
+}
+
+// isCtxErr reports whether err signals context cancellation/deadline.
+func isCtxErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // Close cancels the internal run context first — so FetchMessage, retry

@@ -15,8 +15,15 @@ func urlPathEscape(s string) string {
 	return url.PathEscape(s)
 }
 
-func newTimeoutContext(d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), d)
+// newTimeoutContext derives d-bounded per-request contexts from parent so
+// registry fetches honour the base context captured at Bus/consumer
+// construction (cancelled base ctx ⇒ aborted fetches). A nil parent falls back
+// to context.Background() for standalone use.
+func newTimeoutContext(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, d)
 }
 
 // registryClient is a minimal Confluent-compatible Schema Registry client
@@ -28,14 +35,19 @@ type registryClient struct {
 	path    string
 	http    *http.Client
 	timeout time.Duration
+	// baseCtx is captured once at construction (the bus/base ctx when built
+	// through New/NewConsumer); every fetch derives its timeout from it.
+	// nil means standalone use: Background.
+	baseCtx context.Context
 }
 
-func newRegistryClient(url, path string) *registryClient {
+func newRegistryClient(baseCtx context.Context, url, path string) *registryClient {
 	return &registryClient{
 		base:    strings.TrimSuffix(url, "/"),
 		path:    strings.TrimSuffix(path, "/"),
 		http:    &http.Client{},
 		timeout: 10 * time.Second,
+		baseCtx: baseCtx,
 	}
 }
 
@@ -45,7 +57,7 @@ type schemaResponse struct {
 }
 
 func (c *registryClient) get(path string, out any) error {
-	ctx, cancel := newTimeoutContext(c.timeout)
+	ctx, cancel := newTimeoutContext(c.baseCtx, c.timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {

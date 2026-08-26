@@ -197,7 +197,10 @@ func TestIntegrationCloseCancelsRun(t *testing.T) {
 	}
 	select {
 	case err := <-runDone:
-		fmt.Printf("Run returned %v after %s (cooperative shutdown ok)\n", err, time.Since(start).Round(time.Millisecond))
+		if err != nil {
+			t.Fatalf("Run = %v after Close; shutdown must return nil (Run contract)", err)
+		}
+		fmt.Printf("Run returned nil after %s (cooperative shutdown ok)\n", time.Since(start).Round(time.Millisecond))
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return within 10s after Close")
 	}

@@ -57,12 +57,57 @@ func TestDefaultsFromEnv(t *testing.T) {
 	}
 }
 
+// TestEnvMillisKnobsParsePlainIntegers proves the millisecond-suffixed knobs
+// land as plain integers ("30000"): ParseDuration rejects bare integers, so
+// these are read through GetInt × time.Millisecond (hellnet-lib-cache style).
+func TestEnvMillisKnobsParsePlainIntegers(t *testing.T) {
+	t.Setenv("HELLNET_KAFKA_RETRY_DELAY_MS", "30000")
+	t.Setenv("HELLNET_KAFKA_TIMEOUT_PRODUCE_MS", "45000")
+
+	var o Options
+	o.fromEnv(Default()) // defaults: RetryDelay 200ms, TimeoutProduce 30s
+	if o.RetryDelay != 30*time.Second {
+		t.Fatalf(`RetryDelay = %v, want 30s from plain integer "30000"`, o.RetryDelay)
+	}
+	if o.TimeoutProduce != 45*time.Second {
+		t.Fatalf(`TimeoutProduce = %v, want 45s from plain integer "45000"`, o.TimeoutProduce)
+	}
+}
+
 func TestBackoffGrows(t *testing.T) {
 	a := backoff(200*time.Millisecond, 0)
 	b := backoff(200*time.Millisecond, 1)
 	c := backoff(200*time.Millisecond, 2)
 	if !(a < b && b < c) {
 		t.Fatalf("backoff not monotonic: %v %v %v", a, b, c)
+	}
+}
+
+// TestFetchBackoffEscalatesAndCaps proves the consume-loop fetch retry delay
+// starts around 200ms, escalates by doubling and stays capped at ~5s (±20%
+// jitter) regardless of how long the failure streak lasts.
+func TestFetchBackoffEscalatesAndCaps(t *testing.T) {
+	for attempt := 0; attempt <= 12; attempt++ {
+		wantBase := fetchBackoffBase
+		for i := 0; i < attempt && wantBase < fetchBackoffMax; i++ {
+			wantBase *= 2
+		}
+		if wantBase > fetchBackoffMax {
+			wantBase = fetchBackoffMax
+		}
+		lo := wantBase - wantBase/5
+		hi := wantBase + wantBase/5
+
+		got := fetchBackoff(attempt)
+		if got < lo || got > hi {
+			t.Fatalf("attempt %d: fetchBackoff = %v, want within [%v, %v]", attempt, got, lo, hi)
+		}
+		if t.Failed() {
+			return
+		}
+	}
+	if got := fetchBackoff(100); got > fetchBackoffMax+fetchBackoffMax/5 {
+		t.Fatalf("deep failure streak: fetchBackoff = %v exceeds capped ceiling", got)
 	}
 }
 

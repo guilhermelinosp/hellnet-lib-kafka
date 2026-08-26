@@ -31,7 +31,7 @@ func NewProducer[T Message](ctx context.Context, opts ...Options) (*Producer[T],
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	s, err := o.buildSerializer()
+	s, err := o.buildSerializer(ctx)
 	if err != nil {
 		return nil, err
 	}

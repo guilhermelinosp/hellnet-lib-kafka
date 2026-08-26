@@ -194,6 +194,18 @@ Wire format Confluent idêntico ao Avro.
 - **DLQ**: após esgotar, a mensagem vai para `{topic}.dlq` com headers:
   - `dlq.reason` · `dlq.original.topic` · `dlq.original.partition` · `dlq.original.offset`
 
+## Semântica de entrega (at-least-once)
+
+- **At-least-once**: o offset é commitado depois do sucesso (ou DLQ) da
+  mensagem, e o grupo usa `CommitInterval` de 1s. Uma mensagem pode ser
+  reprocessada se o consumidor cair entre o processamento e o commit —
+  handlers devem ser idempotentes.
+- **Rebalance**: joins/leaves do consumer group, troca de leader e falhas de
+  rede **não derrubam o loop de consumo**. Cada erro transitório de fetch é
+  logado via `log/slog` (WARN com contagem de falhas consecutivas) e o retry
+  usa backoff crescente com teto (base 200ms dobrando até 5s, ±20% jitter);
+  o primeiro fetch com sucesso reseta o contador.
+
 ## Schema Registry
 
 | Registry | Caminho ccompat | `HELLNET_KAFKA_SCHEMA_REGISTRY_PATH` |
@@ -221,33 +233,41 @@ O subject segue a convenção Confluente `{topic}-value`
 | `HELLNET_KAFKA_SCHEMA_REGISTRY_PATH` | `/apis/ccompat/v6` | `none` = raiz (Redpanda/Confluent) |
 | `HELLNET_KAFKA_IDEMPOTENT` | `true` | Producer idempotente |
 | `HELLNET_KAFKA_MAX_RETRIES` | `3` | Total de attempts (handler) |
-| `HELLNET_KAFKA_RETRY_DELAY_MS` | `200` | Backoff base (exponencial + jitter) |
-| `HELLNET_KAFKA_TIMEOUT_PRODUCE_MS` | `30000` | Timeout de produce |
+| `HELLNET_KAFKA_RETRY_DELAY_MS` | `200` | Backoff base (exponencial + jitter), inteiro em ms |
+| `HELLNET_KAFKA_TIMEOUT_PRODUCE_MS` | `30000` | Timeout de produce, inteiro em ms |
 | `HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT` | `5` | Falhas antes de abrir o circuit breaker |
 
 `.env` local (Redpanda kind) em `.env.example` — copie para `.env` (gitignored).
+
+> Os knobs sufixados `_MS` são lidos como **inteiros em milissegundos**
+> (`GetInt` × `time.Millisecond`) — o mesmo formato do hellnet-lib-cache.
 
 ## Testes
 
 ### Unitários
 ```bash
-go test ./...
+go test ./kafka/ -count=1
 ```
 
-### Integração (Kafka + Schema Registry)
-Gateados por env — sem as vars, os testes pulam:
+### Integração (build tag `integration`)
+Suite em `kafka/integration_test.go` contra um broker real (Redpanda),
+compilada só com `-tags integration` e gateada por env — sem a variável,
+os testes pulam. Para rodar local apontando para o Redpanda do cluster
+(namespace `tools`, via port-forward):
+
 ```bash
-HELLNET_TEST_SR=http://127.0.0.1:8081 \
-HELLNET_TEST_KAFKA=1 \
-HELLNET_KAFKA_BROKERS=127.0.0.1:9092 \
-HELLNET_KAFKA_SECURITY_PROTOCOL=plaintext \
-HELLNET_KAFKA_DEFAULT_SERIALIZER=avro \
-HELLNET_KAFKA_SCHEMA_REGISTRY_URL=http://127.0.0.1:8081 \
-HELLNET_KAFKA_SCHEMA_REGISTRY_PATH=none \
-go test ./example -run "RoundTrip|E2E|RetryDLQ" -v
+kubectl port-forward -n tools svc/redpanda 19092:9092 &
+
+HELLNET_TEST_KAFKA_BROKERS=localhost:19092 \
+go test -tags integration -count=1 -run TestIntegration ./kafka/
 ```
 
-Cobertura: **RoundTrip/E2E/DLQ × JSON/Avro/Protobuf** (matriz completa).
+Cobertura do suite:
+`TestIntegrationPublishConsume` (publish/consume end-to-end com ctx capturado
+uma vez), `TestIntegrationHandlerRetryThenDLQ` (retry esgota → DLQ) e
+`TestIntegrationCloseCancelsRun` (`Close()` cancela `Run()` cooperativamente).
+O mesmo suite roda no CI (`.github/workflows/integration.yml`) contra um
+service container Redpanda (`localhost:9092`).
 
 ## Gotchas / lições
 
