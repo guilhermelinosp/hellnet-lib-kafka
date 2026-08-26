@@ -8,7 +8,9 @@
 
 ## 🧒 Entenda com 15 anos
 
-**A analogia** — imagine a **pa** (quadro de avisos) da escola: isso é o **Kafka**
+### A analogia
+
+Imagine a **pa** (quadro de avisos) da escola: isso é o **Kafka**
 (Redpanda é a mesma coisa, só muda a marca). Tem um recado pra dar pra outra turma?
 Clipa o papel na pa e o monitor da outra sala pega quando pode. O quadro de avisos
 em si é o que chamam de **broker**.
@@ -24,7 +26,7 @@ As peças da escola:
 - **Consumer group** = vários monitores dividindo a mesma fileira — cada recado
   é lido por UM deles.
 
-**O problema que resolve:**
+### O problema que resolve
 
 - Apps conversam **sem saber um do outro** — não precisa correr até a outra sala:
   clipou na pa, fim de papo.
@@ -33,9 +35,9 @@ As peças da escola:
 - A lib cuida do trabalho chato: **reenviar** quando dá erro, **etiquetar** certinho
   e **transformar** mensagens (JSON/Avro/protobuf).
 
-**Mini-dicionário:**
+### Mini-dicionário
 
-| Termo | Significado simples |
+| Termo | Analogia |
 |---|---|
 | Tópico | Fileira da pa com etiqueta (`"pedidos"`, `"estoque"`…) |
 | Producer | Quem clipa o recado |
@@ -46,20 +48,17 @@ As peças da escola:
 | At-least-once | Pode chegar repetido, mas **nunca se perde** — como enviar a foto duas vezes pro grupo pra garantir |
 | Schema | Molde/recorte que garante que todo recado tem os campos certos |
 
-**Suas primeiras linhas:**
+### Primeiras linhas
 
 ```go
-ctx := context.Background() // passado UMA VEZ
-prod, _ := kafka.NewProducer[MeuEvento](ctx)
-cons, _ := kafka.NewConsumer[MeuEvento](ctx, handler, spec)
+// interruptor geral da app: criado UMA vez, quem administra depois é a própria lib
+ctx := context.Background()
+
+prod, _ := kafka.NewProducer[MeuEvento](ctx) // clipa recados de MeuEvento; config vem das envs HELLNET_KAFKA_*
+cons, _ := kafka.NewConsumer[MeuEvento](ctx, handler, spec) // monitor lê da fileira do spec e usa o manual (handler)
 ```
 
-- **Linha 1** — cria um contexto genérico: pense nele como o interruptor geral da
-  aplicação. É passado **uma vez**, aqui, e depois quem administra é a própria lib.
-- **Linha 2** — fabrica o producer (quem clipa recados) especializado no tipo
-  `MeuEvento`; a configuração vem das variáveis `HELLNET_KAFKA_*`, sem escrever nada à mão.
-- **Linha 3** — fabrica o consumer (o monitor) que usa o `handler` (o manual) para
-  processar cada `MeuEvento`, lendo da fileira descrita pelo `spec`.
+As próximas seções mostram o detalhe técnico completo de cada peça.
 
 ## De-para (.NET → Go)
 
