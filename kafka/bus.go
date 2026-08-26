@@ -10,16 +10,21 @@ import (
 )
 
 // Bus is the message bus: an idempotent producer with retry and a circuit
-// breaker, plus DLQ publishing. Create it with New() (env-first) or newBus.
+// breaker, plus DLQ publishing. Create it with New/MustNew (env-first): the
+// context is captured once at construction and propagated internally —
+// applications never pass ctx to operations.
 type Bus struct {
 	opts       Options
 	writer     *kafka.Writer
 	breaker    *gobreaker.CircuitBreaker
 	serializer Serializer
+	baseCtx    context.Context // captured once at New(...); parent of every operation
 }
 
-// newBus builds a Bus from validated options.
-func newBus(opts Options) (*Bus, error) {
+// newBus builds a Bus from validated options. ctx becomes the base context:
+// every operation derives its own per-attempt contexts (produce timeouts,
+// cancellation) from it instead of taking a caller-supplied parameter.
+func newBus(ctx context.Context, opts Options) (*Bus, error) {
 	w := &kafka.Writer{
 		Addr:                   kafka.TCP(opts.Brokers...),
 		Balancer:               &kafka.LeastBytes{},
@@ -42,6 +47,7 @@ func newBus(opts Options) (*Bus, error) {
 		opts:       opts,
 		writer:     w,
 		serializer: opts.Serializer,
+		baseCtx:    ctx,
 	}
 	if b.serializer == nil {
 		b.serializer = JSONSerializer{}
@@ -49,23 +55,22 @@ func newBus(opts Options) (*Bus, error) {
 	b.breaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name: "kafka-produce",
 		ReadyToTrip: func(c gobreaker.Counts) bool {
-			return c.ConsecutiveFailures >= uint32(opts.CircuitBreakerCount) //nolint:gosec // count is non-negative
+			//nolint:gosec // G115: CircuitBreakerCount validated >= 1; far below MaxUint32.
+			return c.ConsecutiveFailures >= uint32(opts.CircuitBreakerCount)
 		},
 	})
 	return b, nil
 }
 
-// Publish serializes msg and produces it to "{prefix}.{messageType}" using a
-// default (background) context — mirroring hellnet-lib-cache. Use
-// PublishContext for cancellation/deadline control.
-func (b *Bus) Publish(msg Message) error {
-	return b.PublishContext(context.Background(), msg)
-}
-
-// PublishContext serializes msg and produces it to "{prefix}.{messageType}".
-// Produce is protected by Timeout -> CircuitBreaker (the Go counterpart of the
+// Publish serializes msg and produces it to "{prefix}.{messageType}". Produce
+// is protected by TimeoutProduce -> CircuitBreaker (the Go counterpart of the
 // .NET Polly pipeline). On breaker open, it fails fast until it half-opens.
-func (b *Bus) PublishContext(ctx context.Context, msg Message) error {
+//
+// The context is captured once at New(...) and propagated internally: each
+// attempt derives a fresh timeout (TimeoutProduce) from the stored base
+// context. Applications never pass ctx to operations; cancelling the base
+// context stops in-flight produces cooperatively.
+func (b *Bus) Publish(msg Message) error {
 	topic := TopicName(b.opts, msg.MessageType())
 	payload, err := b.serializer.Serialize(topic, msg)
 	if err != nil {
@@ -74,7 +79,7 @@ func (b *Bus) PublishContext(ctx context.Context, msg Message) error {
 	km := kafka.Message{Topic: topic, Value: payload}
 
 	_, err = b.breaker.Execute(func() (any, error) {
-		wctx, cancel := context.WithTimeout(ctx, b.opts.TimeoutProduce)
+		wctx, cancel := context.WithTimeout(b.baseCtx, b.opts.TimeoutProduce)
 		defer cancel()
 		if err := b.writer.WriteMessages(wctx, km); err != nil {
 			return nil, fmt.Errorf("%w", err)

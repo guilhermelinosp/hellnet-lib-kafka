@@ -43,7 +43,7 @@ func (p *ProtobufSerializer) Serialize(topic string, value any) ([]byte, error) 
 	}
 	out := make([]byte, 5+len(payload))
 	out[0] = 0
-	binary.BigEndian.PutUint32(out[1:5], uint32(id)) //nolint:gosec // schema registry id is a small non-negative int
+	binary.BigEndian.PutUint32(out[1:5], id)
 	copy(out[5:], payload)
 	return out, nil
 }

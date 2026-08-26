@@ -19,7 +19,7 @@ func backoff(base time.Duration, attempt int) time.Duration {
 		d = 10 * time.Millisecond
 	}
 	// ±20% jitter to avoid thundering herds.
-	jitter := time.Duration(rand.Int63n(int64(d/5)*2+1)) - d/5 //nolint:gosec // jitter for backoff; not security-sensitive
+	jitter := time.Duration(rand.Int63n(int64(d/5)*2+1)) - d/5 //nolint:gosec // G404: jitter only, non-crypto by design.
 	return d + jitter
 }
 
@@ -41,7 +41,9 @@ func dlqTopic(source string) string {
 }
 
 // publishDLQ sends a payload to the dead-letter topic with the standard Hellnet
-// headers describing the original failure.
+// headers describing the original failure. The ctx is library-supplied — the
+// consumer's internal run context derived from the context captured at
+// NewConsumer — and each write is bounded by opts.TimeoutProduce.
 func (b *Bus) publishDLQ(ctx context.Context, opts Options, originalTopic string, partition int, offset int64, reason string, payload []byte) error {
 	topic := opts.DeadLetterTopic
 	if topic == "" {

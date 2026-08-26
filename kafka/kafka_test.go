@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -85,4 +86,45 @@ func TestJSONSerializer(t *testing.T) {
 	if out.OrderID != "123" || out.Total != 9.9 {
 		t.Fatalf("roundtrip = %+v", out)
 	}
+}
+
+// testOfflineOptions returns valid options that never touch the network.
+func testOfflineOptions() Options {
+	o := Default()
+	o.Brokers = []string{"127.0.0.1:9092"}
+	o.SecurityProtocol = "plaintext"
+	return o
+}
+
+// TestNewCapturesContextOnce proves the context is passed ONCE at New and
+// stored as the base context propagated internally.
+func TestNewCapturesContextOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bus, err := New(ctx, testOfflineOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bus.Close() }()
+	if bus.baseCtx == nil {
+		t.Fatal("New must capture the caller context as the Bus base context")
+	}
+	cancel()
+	if bus.baseCtx.Err() == nil {
+		t.Fatal("Bus base context must be derived from the ctx given at New")
+	}
+}
+
+func TestMustNew(t *testing.T) {
+	b := MustNew(context.Background(), testOfflineOptions())
+	defer func() { _ = b.Close() }()
+
+	// Invalid options must panic (no brokers configured).
+	defer func() {
+		if recover() == nil {
+			t.Fatal("MustNew must panic when New fails")
+		}
+	}()
+	MustNew(context.Background(), Options{})
 }
