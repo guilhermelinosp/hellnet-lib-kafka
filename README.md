@@ -344,3 +344,5 @@ service container Redpanda (`localhost:9092`).
 
 Apache-2.0
 <!-- release pipeline verification -->
+
+<!-- verify round 2 -->
