@@ -343,3 +343,4 @@ service container Redpanda (`localhost:9092`).
 ## Licença
 
 Apache-2.0
+<!-- release pipeline verification -->
