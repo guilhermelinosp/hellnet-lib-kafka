@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -44,6 +45,9 @@ func (p *ProtobufSerializer) Serialize(topic string, value any) ([]byte, error) 
 	payload, err := proto.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: protobuf encode: %w", err)
+	}
+	if len(payload) > math.MaxInt-5 {
+		return nil, fmt.Errorf("kafka: protobuf: payload too large")
 	}
 	out := make([]byte, 5+len(payload))
 	out[0] = 0
