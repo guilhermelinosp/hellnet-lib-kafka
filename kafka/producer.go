@@ -7,26 +7,25 @@ import (
 
 // Producer is a type-safe producer bound to a single message type T — generics
 // as the abstraction. The topic is derived from T.MessageType, and the
-// serializer is selected from the options (json|avro|protobuf). The context is
-// captured once at NewProducer and propagated internally; applications never
-// pass ctx to operations.
+// serializer is selected from the options (json|avro|protobuf). NewProducer
+// uses the Bus created by the zero-config New constructor.
 type Producer[T Message] struct {
 	bus *Bus
 }
 
-// NewProducer loads env (HELLNET_KAFKA_* via .env) and builds a typed producer
-// for T. The context is captured once here (stored as the Bus base context):
-// every Publish derives its per-attempt produce timeout from it, so callers
-// never pass ctx to operations. Explicit opts override the environment when
-// provided.
-func NewProducer[T Message](ctx context.Context, opts ...Options) (*Producer[T], error) {
+// NewProducer follows the zero-config New pattern: it creates the base context,
+// loads .env, and resolves all options from HELLNET_KAFKA_*.
+func NewProducer[T Message]() (*Producer[T], error) {
+	bus, err := New()
+	if err != nil {
+		return nil, err
+	}
+	return &Producer[T]{bus: bus}, nil
+}
+
+func newProducerWithOptions[T Message](ctx context.Context, o Options) (*Producer[T], error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	loadEnvFiles()
-	o := LoadFromEnv()
-	if len(opts) > 0 {
-		o = opts[0]
 	}
 	if err := o.validate(); err != nil {
 		return nil, err
@@ -43,9 +42,8 @@ func NewProducer[T Message](ctx context.Context, opts ...Options) (*Producer[T],
 	return &Producer[T]{bus: bus}, nil
 }
 
-// Publish produces msg to "{prefix}.{messageType}". The context captured at
-// NewProducer is used internally (each attempt bounded by TimeoutProduce);
-// applications never pass ctx to operations.
+// Publish produces msg to "{prefix}.{messageType}". The constructor context is
+// used internally, with each attempt bounded by TimeoutProduce.
 func (p *Producer[T]) Publish(msg T) error {
 	return p.bus.Publish(msg)
 }

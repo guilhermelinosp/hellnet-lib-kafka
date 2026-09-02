@@ -11,10 +11,8 @@
 // It features env-first configuration (HELLNET_KAFKA_* via .env through
 // hellnet-lib-environments), three serializers (JSON, Avro and Protobuf with
 // Schema Registry and the Confluent wire format), timeout/retry/circuit
-// breaker on produce, and graceful degradation. Entry points New, MustNew,
-// NewProducer and NewConsumer are env-first with optional explicit Options and
-// capture a context ONCE at construction: it is stored as the base context and
-// propagated internally — applications never pass ctx to operations.
+// breaker on produce, and graceful degradation. All public constructors are
+// zero-config and env-first.
 package kafka
 
 import (
@@ -31,7 +29,7 @@ type Options struct {
 	Brokers []string
 	// ConsumerGroup is required for consumers (HELLNET_KAFKA_CONSUMER_GROUP).
 	ConsumerGroup string
-	// TopicPrefix prefixes every topic (HELLNET_KAFKA_TOPIC_PREFIX, default "hellnet").
+	// TopicPrefix optionally prefixes every topic (HELLNET_KAFKA_TOPIC_PREFIX).
 	TopicPrefix string
 	// SecurityProtocol: plaintext, ssl, sasl_plaintext, sasl_ssl.
 	SecurityProtocol string
@@ -65,73 +63,6 @@ type Options struct {
 	SchemaRegistryPath string
 	// DeadLetterTopic overrides the default "{topic}.dlq".
 	DeadLetterTopic string
-}
-
-// Default returns the Hellnet defaults for Options.
-func Default() Options {
-	return Options{
-		Brokers:             []string{"kafka.hellnet.com.br:9094"},
-		ConsumerGroup:       "",
-		TopicPrefix:         "hellnet",
-		SecurityProtocol:    "sasl_ssl",
-		SASLMechanism:       "SCRAM-SHA-512",
-		SASLUsername:        "hellnet-app",
-		Idempotent:          true,
-		MaxRetries:          3,
-		RetryDelay:          200 * time.Millisecond,
-		TimeoutProduce:      30 * time.Second,
-		CircuitBreakerCount: 5,
-		DeadLetterTopic:     "",
-		DefaultSerializer:   "json",
-		SchemaRegistryPath:  "/apis/ccompat/v6",
-	}
-}
-
-// fromEnv overlays environment variables on top of the provided defaults,
-// following the same precedence as hellnet-lib-cache.
-func (o *Options) fromEnv(base Options) {
-	o.Brokers = splitBrokers(environments.GetString("HELLNET_KAFKA_", "", "BROKERS", joinBrokers(base.Brokers)))
-	o.ConsumerGroup = environments.GetString("HELLNET_KAFKA_", "", "CONSUMER_GROUP", base.ConsumerGroup)
-	o.TopicPrefix = environments.GetString("HELLNET_KAFKA_", "", "TOPIC_PREFIX", base.TopicPrefix)
-	o.SecurityProtocol = environments.GetString("HELLNET_KAFKA_", "", "SECURITY_PROTOCOL", base.SecurityProtocol)
-	o.SASLMechanism = environments.GetString("HELLNET_KAFKA_", "", "SASL_MECHANISM", base.SASLMechanism)
-	o.SASLUsername = environments.GetString("HELLNET_KAFKA_", "", "SASL_USERNAME", base.SASLUsername)
-	o.SASLPassword = environments.GetString("HELLNET_KAFKA_", "", "SASL_PASSWORD", base.SASLPassword)
-	o.SSLCA = environments.GetString("HELLNET_KAFKA_", "", "SSL_CA_LOCATION", base.SSLCA)
-	o.SSLInsecureSkipVerify = environments.GetBool("HELLNET_KAFKA_", "", "SSL_INSECURE_SKIP_VERIFY", base.SSLInsecureSkipVerify)
-	o.Idempotent = environments.GetBool("HELLNET_KAFKA_", "", "IDEMPOTENT", base.Idempotent)
-	o.MaxRetries = environments.GetInt("HELLNET_KAFKA_", "", "MAX_RETRIES", base.MaxRetries)
-	// GetDuration cannot parse bare integers ("30000"), so millisecond-suffixed
-	// knobs are read through GetInt × time.Millisecond — same convention as
-	// hellnet-lib-cache.
-	o.RetryDelay = time.Duration(environments.GetInt("HELLNET_KAFKA_", "",
-		"RETRY_DELAY_MS", int(base.RetryDelay/time.Millisecond))) * time.Millisecond
-	o.TimeoutProduce = time.Duration(environments.GetInt("HELLNET_KAFKA_", "",
-		"TIMEOUT_PRODUCE_MS", int(base.TimeoutProduce/time.Millisecond))) * time.Millisecond
-	o.CircuitBreakerCount = environments.GetInt("HELLNET_KAFKA_", "", "CIRCUIT_BREAKER_COUNT", base.CircuitBreakerCount)
-	o.DeadLetterTopic = environments.GetString("HELLNET_KAFKA_", "", "DEAD_LETTER_TOPIC", base.DeadLetterTopic)
-	o.DefaultSerializer = environments.GetString("HELLNET_KAFKA_", "", "DEFAULT_SERIALIZER", base.DefaultSerializer)
-	o.SchemaRegistryURL = environments.GetString("HELLNET_KAFKA_", "", "SCHEMA_REGISTRY_URL", base.SchemaRegistryURL)
-	o.SchemaRegistryPath = environments.GetString("HELLNET_KAFKA_", "", "SCHEMA_REGISTRY_PATH", base.SchemaRegistryPath)
-	if o.SchemaRegistryPath == "none" || o.SchemaRegistryPath == "/" {
-		o.SchemaRegistryPath = "" // raiz: Redpanda/Confluent
-	}
-	// Serializer is intentionally left nil here: New()/NewConsumer build it
-	// from DefaultSerializer (json|avro).
-}
-
-// LoadFromEnv loads HELLNET_KAFKA_* env (plus .env via environments) into
-// Options with Hellnet defaults — mirroring hellnet-lib-cache/telemetry.
-func LoadFromEnv() Options {
-	o := Options{}
-	o.fromEnv(Default())
-	return o
-}
-
-// loadEnvFiles loads .env files through hellnet-lib-environments (embedded
-// .env + ./.env from disk), so callers only need New().
-func loadEnvFiles() {
-	_ = environments.LoadDotEnv("HELLNET_KAFKA_ENV_FILE", "HELLNET_ENV_FILE")
 }
 
 // validate checks required and supported option values.
@@ -189,23 +120,51 @@ func (o *Options) ensureSerializer(baseCtx context.Context) (Serializer, error) 
 	return o.buildSerializer(baseCtx)
 }
 
-// New loads env (.env + HELLNET_KAFKA_*) and builds a ready-to-use Bus. The
-// context is captured once here (stored as the Bus base context) and
-// propagated internally: every operation derives its per-attempt contexts
-// (produce timeouts, cancellation) from it — applications never pass ctx to
-// operations. Cancelling ctx stops in-flight work cooperatively. Explicit opts
-// override the environment when provided (useful in tests and embedded
-// contexts), mirroring hellnet-lib-cache/telemetry. A consumer group is only
-// required if a consumer will be started.
-func New(ctx context.Context, opts ...Options) (*Bus, error) {
+// New follows the hellnet-lib-telemetry constructor pattern: it creates the
+// base context, loads .env before reading configuration, and builds Options
+// entirely from HELLNET_KAFKA_* variables and defaults. A consumer group is
+// only required if a consumer will be started.
+func New() (*Bus, error) {
+	ctx := context.Background()
+
+	// Env-first: load .env before reading HELLNET_KAFKA_* variables. Best
+	// effort: without a file (or with a parse error), process env still applies.
+	_ = environments.LoadDotEnv()
+
+	o := Options{
+		Brokers:               splitBrokers(environments.GetString("HELLNET_KAFKA_", "HELLNET_", "BROKERS", "")),
+		ConsumerGroup:         environments.GetString("HELLNET_KAFKA_", "HELLNET_", "CONSUMER_GROUP", ""),
+		TopicPrefix:           environments.GetString("HELLNET_KAFKA_", "HELLNET_", "TOPIC_PREFIX", ""),
+		SecurityProtocol:      environments.GetString("HELLNET_KAFKA_", "HELLNET_", "SECURITY_PROTOCOL", "sasl_ssl"),
+		SASLMechanism:         environments.GetString("HELLNET_KAFKA_", "HELLNET_", "SASL_MECHANISM", "SCRAM-SHA-512"),
+		SASLUsername:          environments.GetString("HELLNET_KAFKA_", "HELLNET_", "SASL_USERNAME", "hellnet-app"),
+		SASLPassword:          environments.GetString("HELLNET_KAFKA_", "HELLNET_", "SASL_PASSWORD", ""),
+		SSLCA:                 environments.GetString("HELLNET_KAFKA_", "HELLNET_", "SSL_CA_LOCATION", ""),
+		SSLInsecureSkipVerify: environments.GetBool("HELLNET_KAFKA_", "HELLNET_", "SSL_INSECURE_SKIP_VERIFY", false),
+		Idempotent:            environments.GetBool("HELLNET_KAFKA_", "HELLNET_", "IDEMPOTENT", true),
+		MaxRetries:            environments.GetInt("HELLNET_KAFKA_", "HELLNET_", "MAX_RETRIES", 3),
+		RetryDelay:            time.Duration(environments.GetInt("HELLNET_KAFKA_", "HELLNET_", "RETRY_DELAY_MS", 200)) * time.Millisecond,
+		TimeoutProduce:        time.Duration(environments.GetInt("HELLNET_KAFKA_", "HELLNET_", "TIMEOUT_PRODUCE_MS", 30000)) * time.Millisecond,
+		CircuitBreakerCount:   environments.GetInt("HELLNET_KAFKA_", "HELLNET_", "CIRCUIT_BREAKER_COUNT", 5),
+		DeadLetterTopic:       environments.GetString("HELLNET_KAFKA_", "HELLNET_", "DEAD_LETTER_TOPIC", ""),
+		DefaultSerializer:     environments.GetString("HELLNET_KAFKA_", "HELLNET_", "DEFAULT_SERIALIZER", "json"),
+		SchemaRegistryURL:     environments.GetString("HELLNET_KAFKA_", "HELLNET_", "SCHEMA_REGISTRY_URL", ""),
+		SchemaRegistryPath:    environments.GetString("HELLNET_KAFKA_", "HELLNET_", "SCHEMA_REGISTRY_PATH", "/apis/ccompat/v6"),
+	}
+	if o.SchemaRegistryPath == "none" || o.SchemaRegistryPath == "/" {
+		o.SchemaRegistryPath = ""
+	}
+	return newBusWithOptions(ctx, o)
+}
+
+func newWithOptions(ctx context.Context, opts Options) (*Bus, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	loadEnvFiles()
-	o := LoadFromEnv()
-	if len(opts) > 0 {
-		o = opts[0]
-	}
+	return newBusWithOptions(ctx, opts)
+}
+
+func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
@@ -218,8 +177,8 @@ func New(ctx context.Context, opts ...Options) (*Bus, error) {
 }
 
 // MustNew is like New but panics if construction fails.
-func MustNew(ctx context.Context, opts ...Options) *Bus {
-	b, err := New(ctx, opts...)
+func MustNew() *Bus {
+	b, err := New()
 	if err != nil {
 		panic(err)
 	}

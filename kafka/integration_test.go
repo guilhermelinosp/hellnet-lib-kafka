@@ -38,7 +38,7 @@ type evtTest struct {
 func (evtTest) MessageType() string { return "it.test.v1" }
 
 func integrationBaseOpts(brokers []string) Options {
-	o := Default()
+	o := testDefaultOptions()
 	o.Brokers = brokers
 	o.SecurityProtocol = "plaintext"
 	return o
@@ -52,7 +52,7 @@ func TestIntegrationPublishConsume(t *testing.T) {
 	ctx := context.Background()
 	topic := "hellnet.it.test.v1" // pré-existente: auto-create in-flight perde batches
 
-	prod, err := NewProducer[evtTest](ctx, integrationBaseOpts(brokers))
+	prod, err := newProducerWithOptions[evtTest](ctx, integrationBaseOpts(brokers))
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestIntegrationPublishConsume(t *testing.T) {
 	})
 
 	spec := HandlerSpec{Topic: topic, Group: fmt.Sprintf("grp-%d", time.Now().UnixNano())}
-	cons, err := NewConsumer[evtTest](ctx, h, spec, integrationBaseOpts(brokers))
+	cons, err := newConsumerWithOptions[evtTest](ctx, h, spec, integrationBaseOpts(brokers))
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}
@@ -139,14 +139,14 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	o.RetryDelay = 50 * time.Millisecond
 
 	spec := HandlerSpec{Topic: topic, Group: fmt.Sprintf("grp-dlq-%d", base), MaxRetries: 2}
-	cons, err := NewConsumer[evtTest](ctx, h, spec, o)
+	cons, err := newConsumerWithOptions[evtTest](ctx, h, spec, o)
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}
 	defer func() { _ = cons.Close() }()
 	go func() { _ = cons.Run() }()
 
-	prod, err := NewProducer[evtTest](ctx, integrationBaseOpts(brokers))
+	prod, err := newProducerWithOptions[evtTest](ctx, integrationBaseOpts(brokers))
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestIntegrationCloseCancelsRun(t *testing.T) {
 
 	h := HandlerFunc[evtTest](func(ctx context.Context, msg evtTest, mc Ctx) error { return nil })
 	spec := HandlerSpec{Topic: topic, Group: fmt.Sprintf("grp-stop-%d", time.Now().UnixNano())}
-	cons, err := NewConsumer[evtTest](ctx, h, spec, integrationBaseOpts(brokers))
+	cons, err := newConsumerWithOptions[evtTest](ctx, h, spec, integrationBaseOpts(brokers))
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}

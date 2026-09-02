@@ -54,8 +54,8 @@ As peças da escola:
 // interruptor geral da app: criado UMA vez, quem administra depois é a própria lib
 ctx := context.Background()
 
-prod, _ := kafka.NewProducer[MeuEvento](ctx) // clipa recados de MeuEvento; config vem das envs HELLNET_KAFKA_*
-cons, _ := kafka.NewConsumer[MeuEvento](ctx, handler, spec) // monitor lê da fileira do spec e usa o manual (handler)
+prod, _ := kafka.NewProducer[MeuEvento]() // clipa recados de MeuEvento; config vem das envs HELLNET_KAFKA_*
+cons, _ := kafka.NewConsumer[MeuEvento](handler, spec) // monitor lê da fileira do spec e usa o manual (handler)
 ```
 
 As próximas seções mostram o detalhe técnico completo de cada peça.
@@ -69,7 +69,7 @@ As próximas seções mostram o detalhe técnico completo de cada peça.
 | `IMessageHandler<T>.HandleAsync` | `Handler[T].Handle(ctx, msg, Ctx)` |
 | `IMessageContext` | `Ctx{Topic, Partition, Offset, Key}` |
 | `MessageHandlerAttribute` | `HandlerSpec{Topic, Group, MaxRetries}` |
-| `AddHellnetKafka()` (DI) | `kafka.NewProducer[T](ctx)` / `kafka.NewConsumer[T](ctx, h, spec, opts...)` |
+| `AddHellnetKafka()` (DI) | `kafka.NewProducer[T]()` / `kafka.NewConsumer[T](h, spec)` |
 | Confluent.Kafka + Polly | `segmentio/kafka-go` + `sony/gobreaker` |
 | `AvroMessageSerializer` | `kafka.AvroSerializer` (wire format Confluent) |
 | `ProtobufMessageSerializer` | `kafka.ProtobufSerializer` (wire format Confluent) |
@@ -82,7 +82,7 @@ As próximas seções mostram o detalhe técnico completo de cada peça.
 - **3 serializers** — JSON, Avro e Protobuf (Schema Registry, wire format Confluent)
 - **Resiliência** — timeout → retry exponencial → circuit breaker (produce)
 - **Dead Letter Queue** — handler falhou após `MaxRetries` → `{topic}.dlq` com headers `dlq.*`
-- **`ctx` uma vez na construção** — `New(ctx)`/`NewProducer(ctx)`/`NewConsumer(ctx, ...)` capturam o contexto e propagam internamente; apps **nunca** passam ctx às operações (`Publish`, `Run`, `Close`)
+- **zero-config** — `New()` cria o contexto base, carrega `.env` e resolve `HELLNET_KAFKA_*` com fallback para `HELLNET_*`
 - **Apicurio e Redpanda** — SR com caminho configurável (`/apis/ccompat/v6` ou raiz)
 
 ## Quick start (generics como abstração)
@@ -116,12 +116,12 @@ func (orderHandler) Handle(ctx context.Context, msg orderCreated, mctx kafka.Ctx
 }
 
 func main() {
-	// Contexto passado UMA vez, na construção (Ctrl-C encerra cooperativamente).
+	// Contexto do run loop (Ctrl-C encerra cooperativamente).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	// Producer tipado pelo tipo da mensagem (env-first; lê HELLNET_KAFKA_* via .env).
-	prod, err := kafka.NewProducer[orderCreated](ctx)
+	prod, err := kafka.NewProducer[orderCreated]()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -131,12 +131,12 @@ func main() {
 	}
 
 	// Consumer tipado pelo handler (env-first; opts opcionais).
-	cons, err := kafka.NewConsumer(ctx, orderHandler{}, kafka.HandlerSpec{})
+	cons, err := kafka.NewConsumer(orderHandler{}, kafka.HandlerSpec{})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer cons.Close()
-	_ = cons.Run() // bloqueia até Close()/cancelamento do ctx capturado
+	_ = cons.RunContext(ctx) // bloqueia até Close()/cancelamento do ctx
 }
 ```
 
@@ -155,16 +155,17 @@ Use `HandlerSpec.Topic` para sobrescrever.
 ### Producer[T]
 
 ```go
-prod, _ := kafka.NewProducer[orderCreated](ctx) // env-first; ctx capturado uma vez
-prod.Publish(msg)                 // usa o ctx capturado (timeout por attempt internamente)
+prod, _ := kafka.NewProducer[orderCreated]() // env-first; contexto interno
+prod.Publish(msg)                 // usa contexto interno (timeout por attempt)
 prod.Close()
 ```
 
 ### Consumer[T]
 
 ```go
-cons, _ := kafka.NewConsumer[T](ctx, handler, HandlerSpec{}, opts ...Options) // env-first; ctx capturado uma vez
-cons.Run()                         // bloqueia até Close()/cancelamento do ctx capturado
+cons, _ := kafka.NewConsumer[T](handler, HandlerSpec{}) // env-first; contexto interno
+cons.Run()                         // bloqueia até Close()
+cons.RunContext(ctx)              // variante cancelável pelo chamador
 cons.Close()                       // cancela o run ctx interno e libera reader/bus
 ```
 
@@ -176,8 +177,8 @@ type Handler[T Message] interface {
 }
 type HandlerFunc[T Message] func(ctx context.Context, msg T, mctx Ctx) error
 
-// O ctx de Handle é fornecido pela biblioteca: derivado do contexto passado
-// em NewConsumer(...) + cancelamento do run loop. Usado para shutdown
+// O ctx de Handle é fornecido pela biblioteca e derivado do contexto do
+// run loop. Usado para processamento e shutdown
 // cooperativo — a aplicação nunca o passa manualmente.
 
 type HandlerSpec struct {
@@ -202,8 +203,8 @@ type Ctx struct {
 
 Para publicar **vários tipos** de mensagem pelo mesmo connection:
 ```go
-bus, _ := kafka.New(ctx, opts ...Options) // env-first; ctx capturado uma vez
-bus.Publish(msg)                          // msg: Message
+bus, _ := kafka.New() // env-first; context.Background interno
+bus.Publish(msg)      // msg: Message
 bus.Close()
 ```
 
@@ -282,14 +283,14 @@ O subject segue a convenção Confluente `{topic}-value`
 
 | Env | Default | Descrição |
 |---|---|---|
-| `HELLNET_KAFKA_BROKERS` | `kafka.hellnet.com.br:9094` | Lista de brokers (vírgula) |
+| `HELLNET_KAFKA_BROKERS` | obrigatório | Lista de brokers (vírgula) |
 | `HELLNET_KAFKA_SECURITY_PROTOCOL` | `sasl_ssl` | plaintext, ssl, sasl_plaintext, sasl_ssl |
 | `HELLNET_KAFKA_SASL_MECHANISM` | `SCRAM-SHA-512` | PLAIN, SCRAM-SHA-256/512 |
 | `HELLNET_KAFKA_SASL_USERNAME` | `hellnet-app` | Usuário SCRAM |
 | `HELLNET_KAFKA_SASL_PASSWORD` | — | Obrigatório p/ sasl_* |
 | `HELLNET_KAFKA_SSL_CA_LOCATION` | — | CA certificate |
-| `HELLNET_KAFKA_CONSUMER_GROUP` | `""` | Obrigatório p/ consumers |
-| `HELLNET_KAFKA_TOPIC_PREFIX` | `hellnet` | Prefixo dos topics (`{prefix}.{messageType}`) |
+| `HELLNET_KAFKA_CONSUMER_GROUP` | obrigatório para consumer | Grupo do consumer |
+| `HELLNET_KAFKA_TOPIC_PREFIX` | — | Prefixo opcional dos topics (`{prefix}.{messageType}`) |
 | `HELLNET_KAFKA_DEFAULT_SERIALIZER` | `json` | json, avro, protobuf |
 | `HELLNET_KAFKA_SCHEMA_REGISTRY_URL` | — | Obrigatório p/ avro/protobuf |
 | `HELLNET_KAFKA_SCHEMA_REGISTRY_PATH` | `/apis/ccompat/v6` | `none` = raiz (Redpanda/Confluent) |
@@ -298,6 +299,9 @@ O subject segue a convenção Confluente `{topic}-value`
 | `HELLNET_KAFKA_RETRY_DELAY_MS` | `200` | Backoff base (exponencial + jitter), inteiro em ms |
 | `HELLNET_KAFKA_TIMEOUT_PRODUCE_MS` | `30000` | Timeout de produce, inteiro em ms |
 | `HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT` | `5` | Falhas antes de abrir o circuit breaker |
+
+Cada variável `HELLNET_KAFKA_*` aceita a correspondente `HELLNET_*` como
+fallback, seguindo a mesma precedência da `hellnet-lib-telemetry`.
 
 `.env` local (Redpanda kind) em `.env.example` — copie para `.env` (gitignored).
 
@@ -333,8 +337,8 @@ service container Redpanda (`localhost:9092`).
 
 ## Gotchas / lições
 
-- `New`/`NewProducer`/`NewConsumer` chamam `loadEnvFiles()` — sem isso o `.env` é
-  ignorado e o default `sasl_ssl` falha com "SASL_PASSWORD required".
+- `New`/`NewProducer`/`NewConsumer` chamam `environments.LoadDotEnv()` antes de
+  ler as configurações; sem isso o `.env` seria ignorado.
 - `StartOffset: FirstOffset` — grupos novos fazem replay do início (testes determinísticos).
 - Protobuf: use `T` ponteiro + mensagem embutida por valor (evita copylocks do `go vet`).
 - SR **efêmero** (Redpanda sem PVC): schemas zeram no restart do pod — registre com
