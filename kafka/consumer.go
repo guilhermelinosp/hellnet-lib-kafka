@@ -76,7 +76,7 @@ func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*C
 	if spec.MaxRetries > 0 {
 		maxRetries = spec.MaxRetries
 	}
-	runCtx, cancelRun := context.WithCancel(bus.baseCtx) //nolint:gosec // G118: cancelRun is stored and invoked by Close() for cooperative shutdown.
+	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- cancelRun is stored and invoked by Close for cooperative shutdown.
 	return &Consumer[T]{
 			opts:       o,
 			handler:    h,

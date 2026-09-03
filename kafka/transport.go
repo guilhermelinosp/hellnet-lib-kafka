@@ -38,7 +38,7 @@ func newDialer(o Options) *kafka.Dialer {
 
 // buildTLS builds a tls.Config from HELLNET_KAFKA_SSL_* options.
 func buildTLS(o Options) (*tls.Config, error) {
-	//nolint:gosec // G402: SSLInsecureSkipVerify is an explicit operator opt-in option.
+	// #nosec G402 -- SSLInsecureSkipVerify is an explicit operator opt-in option.
 	cfg := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: o.SSLInsecureSkipVerify,
