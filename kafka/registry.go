@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -86,10 +87,10 @@ func (c *registryClient) latestSchema(subject string) (string, uint32, error) {
 	if err := c.get(c.path+"/subjects/"+urlPathEscape(subject)+"/versions/latest", &sr); err != nil {
 		return "", 0, err
 	}
-	if sr.ID < 0 {
+	if sr.ID < 0 || uint64(sr.ID) > uint64(math.MaxUint32) {
 		return "", 0, fmt.Errorf("kafka: schema registry %s: invalid schema id %d", subject, sr.ID)
 	}
-	id := uint32(sr.ID) //nolint:gosec // G115: guarded by sr.ID < 0 above.
+	id := uint32(sr.ID) // #nosec G115 -- range checked above.
 	return sr.Schema, id, nil
 }
 

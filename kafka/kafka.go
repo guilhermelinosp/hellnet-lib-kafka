@@ -18,6 +18,7 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/guilhermelinosp/hellnet-lib-environments/environments"
@@ -75,6 +76,9 @@ func (o *Options) validate() error {
 	}
 	if o.CircuitBreakerCount < 1 {
 		return fmt.Errorf("kafka: HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT must be >= 1")
+	}
+	if uint64(o.CircuitBreakerCount) > uint64(math.MaxUint32) {
+		return fmt.Errorf("kafka: HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT must be <= %d", uint64(math.MaxUint32))
 	}
 	switch o.SecurityProtocol {
 	case "plaintext", "ssl", "sasl_plaintext", "sasl_ssl":

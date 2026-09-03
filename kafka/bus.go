@@ -53,8 +53,7 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 	b.breaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name: "kafka-produce",
 		ReadyToTrip: func(c gobreaker.Counts) bool {
-			//nolint:gosec // G115: CircuitBreakerCount validated >= 1; far below MaxUint32.
-			return c.ConsecutiveFailures >= uint32(opts.CircuitBreakerCount)
+			return c.ConsecutiveFailures >= uint32(opts.CircuitBreakerCount) // #nosec G115 -- validate rejects values outside uint32.
 		},
 	})
 	return b, nil
