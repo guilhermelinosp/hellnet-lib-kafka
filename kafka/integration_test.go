@@ -44,6 +44,39 @@ func integrationBaseOpts(brokers []string) Options {
 	return o
 }
 
+func newProducerWithOptions[T Message](ctx context.Context, o Options) (*Producer[T], error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := o.validate(); err != nil {
+		return nil, err
+	}
+	s, err := o.buildSerializer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	o.Serializer = s
+	bus, err := newBus(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	return &Producer[T]{bus: bus}, nil
+}
+
+func newConsumerWithOptions[T Message](ctx context.Context, h Handler[T], spec HandlerSpec, o Options) (*Consumer[T], error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if h == nil {
+		return nil, fmt.Errorf("kafka: handler is nil")
+	}
+	bus, err := newBusWithOptions(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	return newConsumerWithBus(h, spec, bus)
+}
+
 // TestIntegrationPublishConsume covers the core loop: construct once with ctx,
 // publish without ctx, consume via Run() into a handler that receives the
 // lib-supplied ctx, then close and observe cooperative stop.

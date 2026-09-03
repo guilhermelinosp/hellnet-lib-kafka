@@ -39,7 +39,7 @@ jobs:
 
       - name: Semgrep
         run: |
-          pip install --quiet --break-system-packages semgrep
+          pip install --quiet --break-system-packages --only-binary=:all: semgrep==1.176.0
           semgrep --version
           semgrep --config p/ci --error --exclude .github
 

@@ -1,7 +1,6 @@
 package kafka
 
 import (
-	"context"
 	"fmt"
 )
 
@@ -17,25 +16,6 @@ type Producer[T Message] struct {
 // loads .env, and resolves all options from HELLNET_KAFKA_*.
 func NewProducer[T Message]() (*Producer[T], error) {
 	bus, err := New()
-	if err != nil {
-		return nil, err
-	}
-	return &Producer[T]{bus: bus}, nil
-}
-
-func newProducerWithOptions[T Message](ctx context.Context, o Options) (*Producer[T], error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := o.validate(); err != nil {
-		return nil, err
-	}
-	s, err := o.buildSerializer(ctx)
-	if err != nil {
-		return nil, err
-	}
-	o.Serializer = s
-	bus, err := newBus(ctx, o)
 	if err != nil {
 		return nil, err
 	}

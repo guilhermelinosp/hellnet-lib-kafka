@@ -111,15 +111,6 @@ func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
 	}
 }
 
-// ensureSerializer returns the configured serializer, building it from
-// DefaultSerializer when nil. baseCtx is threaded into the registry client.
-func (o *Options) ensureSerializer(baseCtx context.Context) (Serializer, error) {
-	if o.Serializer != nil {
-		return o.Serializer, nil
-	}
-	return o.buildSerializer(baseCtx)
-}
-
 // New follows the hellnet-lib-telemetry constructor pattern: it creates the
 // base context, loads .env before reading configuration, and builds Options
 // entirely from HELLNET_KAFKA_* variables and defaults. A consumer group is

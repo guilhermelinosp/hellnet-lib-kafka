@@ -48,20 +48,6 @@ func NewConsumer[T Message](h Handler[T], spec HandlerSpec) (*Consumer[T], error
 	return newConsumerWithBus(h, spec, bus)
 }
 
-func newConsumerWithOptions[T Message](ctx context.Context, h Handler[T], spec HandlerSpec, o Options) (*Consumer[T], error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if h == nil {
-		return nil, fmt.Errorf("kafka: handler is nil")
-	}
-	bus, err := newBusWithOptions(ctx, o)
-	if err != nil {
-		return nil, err
-	}
-	return newConsumerWithBus(h, spec, bus)
-}
-
 func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*Consumer[T], error) {
 	o := bus.opts
 	group := o.ConsumerGroup
