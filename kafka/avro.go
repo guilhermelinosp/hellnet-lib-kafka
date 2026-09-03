@@ -5,8 +5,15 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/hamba/avro/v2"
+	"github.com/iskorotkov/avro/v2"
 )
+
+const maxAvroCollectionElements = 100_000
+
+var avroCodec = avro.Config{
+	MaxMapAllocSize:   maxAvroCollectionElements,
+	MaxSliceAllocSize: maxAvroCollectionElements,
+}.Freeze()
 
 // AvroSerializer serializes messages with Avro backed by a Schema Registry
 // (hellnet-lib-schema -> Apicurio Registry), using the Confluent wire format:
@@ -43,7 +50,7 @@ func (a *AvroSerializer) Serialize(topic string, value any) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kafka: avro parse: %w", err)
 	}
-	payload, err := avro.Marshal(codec, value)
+	payload, err := avroCodec.Marshal(codec, value)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: avro encode: %w", err)
 	}
@@ -69,5 +76,5 @@ func (a *AvroSerializer) Deserialize(_ string, data []byte, out any) error {
 	if err != nil {
 		return fmt.Errorf("kafka: avro parse: %w", err)
 	}
-	return avro.Unmarshal(codec, data[5:], out)
+	return avroCodec.Unmarshal(codec, data[5:], out)
 }

@@ -15,9 +15,8 @@ import (
 // (or overridden by HandlerSpec). Failed handlers are retried with exponential
 // backoff and, once exhausted, the message goes to the Dead Letter Queue.
 //
-// The context is captured once at NewConsumer and propagated internally: Run
-// derives its run context from it and Close cancels that derivation for
-// cooperative shutdown. Applications never pass ctx to operations.
+// NewConsumer uses an internal context. RunContext can add a per-run
+// cancellation boundary, and Close always cancels consumption cooperatively.
 type Consumer[T Message] struct {
 	opts       Options
 	handler    Handler[T]
@@ -29,54 +28,38 @@ type Consumer[T Message] struct {
 	group      string
 	maxRetries int
 
-	// runCtx is derived once from the ctx captured at NewConsumer; cancelRun
+	// runCtx is derived once from the constructor context; cancelRun
 	// (wired into Close) cancels it so FetchMessage, retry backoffs and DLQ
 	// writes stop promptly on shutdown.
 	runCtx    context.Context
 	cancelRun context.CancelFunc
 }
 
-// NewConsumer builds a consumer for the given handler and per-handler spec.
-// The context is captured once here and propagated internally: Run derives a
-// cancelable run context from it (Close cancels it), handlers receive
-// library-supplied contexts derived from it, and applications never pass ctx
-// to operations. Options are optional: when omitted, the environment is loaded
-// internally (HELLNET_KAFKA_* via .env), mirroring New(). Explicit opts
-// override the env.
-func NewConsumer[T Message](ctx context.Context, h Handler[T], spec HandlerSpec, opts ...Options) (*Consumer[T], error) {
+// NewConsumer follows the zero-config New pattern: it creates the base context,
+// loads .env, and resolves all options from HELLNET_KAFKA_*.
+func NewConsumer[T Message](h Handler[T], spec HandlerSpec) (*Consumer[T], error) {
 	if h == nil {
 		return nil, fmt.Errorf("kafka: handler is nil")
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	loadEnvFiles()
-	o := LoadFromEnv()
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	if err := o.validate(); err != nil {
+	bus, err := New()
+	if err != nil {
 		return nil, err
 	}
+	return newConsumerWithBus(h, spec, bus)
+}
+
+func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*Consumer[T], error) {
+	o := bus.opts
 	group := o.ConsumerGroup
 	if spec.Group != "" {
 		group = spec.Group
 	}
 	if group == "" {
+		_ = bus.Close()
 		return nil, fmt.Errorf("kafka: consumer group required (HELLNET_KAFKA_CONSUMER_GROUP or HandlerSpec.Group)")
 	}
 	var zero T
 	topic := spec.resolveTopic(o, zero.MessageType())
-
-	bus, err := newBus(ctx, o)
-	if err != nil {
-		return nil, err
-	}
-	serializer, err := o.ensureSerializer(ctx)
-	if err != nil {
-		_ = bus.Close()
-		return nil, err
-	}
 
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        o.Brokers,
@@ -93,14 +76,14 @@ func NewConsumer[T Message](ctx context.Context, h Handler[T], spec HandlerSpec,
 	if spec.MaxRetries > 0 {
 		maxRetries = spec.MaxRetries
 	}
-	runCtx, cancelRun := context.WithCancel(ctx) //nolint:gosec // G118: cancelRun is stored and invoked by Close() for cooperative shutdown.
+	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- cancelRun is stored and invoked by Close for cooperative shutdown.
 	return &Consumer[T]{
 			opts:       o,
 			handler:    h,
 			spec:       spec,
 			reader:     r,
 			bus:        bus,
-			serializer: serializer,
+			serializer: bus.serializer,
 			topic:      topic,
 			group:      group,
 			maxRetries: maxRetries,
@@ -110,20 +93,37 @@ func NewConsumer[T Message](ctx context.Context, h Handler[T], spec HandlerSpec,
 		nil
 }
 
-// Run consumes messages until the internal run context is cancelled — by Close
-// or by cancelling/closing the context captured at NewConsumer — an
-// unrecoverable error occurs, or the reader fails. It commits offsets after
-// each successful or DLQ'd batch.
+// Run consumes messages until the internal run context is cancelled by Close
+// (or by its internal context), an unrecoverable error occurs, or
+// the reader fails. It commits offsets after each successful or DLQ'd batch.
 //
 // Shutdown contract: cancellation/shutdown paths always return nil — context
 // cancellation during FetchMessage, during a backoff sleep, or a commit that
 // races shutdown. Errors observed while still running (e.g. a real broker
 // commit failure) are returned as errors.
 //
-// The run context is supplied by the library (derived once from the context
-// given at NewConsumer); applications never pass ctx to operations.
+// The run context is supplied by the library. Use RunContext when a caller
+// needs a bounded run while using the zero-config constructor.
 func (c *Consumer[T]) Run() error {
-	ctx := c.runCtx
+	return c.run(c.runCtx)
+}
+
+// RunContext consumes until ctx, Close, or the constructor context is
+// cancelled. It is useful with the zero-config NewConsumer constructor.
+func (c *Consumer[T]) RunContext(ctx context.Context) error {
+	if ctx == nil {
+		return c.Run()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.runCtx, cancel)
+	defer func() {
+		stop()
+		cancel()
+	}()
+	return c.run(runCtx)
+}
+
+func (c *Consumer[T]) run(ctx context.Context) error {
 	var fetchFails int // consecutive transient fetch failures for backoff
 	for {
 		m, err := c.reader.FetchMessage(ctx)

@@ -38,10 +38,43 @@ type evtTest struct {
 func (evtTest) MessageType() string { return "it.test.v1" }
 
 func integrationBaseOpts(brokers []string) Options {
-	o := Default()
+	o := testDefaultOptions()
 	o.Brokers = brokers
 	o.SecurityProtocol = "plaintext"
 	return o
+}
+
+func newProducerWithOptions[T Message](ctx context.Context, o Options) (*Producer[T], error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := o.validate(); err != nil {
+		return nil, err
+	}
+	s, err := o.buildSerializer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	o.Serializer = s
+	bus, err := newBus(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	return &Producer[T]{bus: bus}, nil
+}
+
+func newConsumerWithOptions[T Message](ctx context.Context, h Handler[T], spec HandlerSpec, o Options) (*Consumer[T], error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if h == nil {
+		return nil, fmt.Errorf("kafka: handler is nil")
+	}
+	bus, err := newBusWithOptions(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	return newConsumerWithBus(h, spec, bus)
 }
 
 // TestIntegrationPublishConsume covers the core loop: construct once with ctx,
@@ -52,7 +85,7 @@ func TestIntegrationPublishConsume(t *testing.T) {
 	ctx := context.Background()
 	topic := "hellnet.it.test.v1" // pré-existente: auto-create in-flight perde batches
 
-	prod, err := NewProducer[evtTest](ctx, integrationBaseOpts(brokers))
+	prod, err := newProducerWithOptions[evtTest](ctx, integrationBaseOpts(brokers))
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
 	}
@@ -82,7 +115,7 @@ func TestIntegrationPublishConsume(t *testing.T) {
 	})
 
 	spec := HandlerSpec{Topic: topic, Group: fmt.Sprintf("grp-%d", time.Now().UnixNano())}
-	cons, err := NewConsumer[evtTest](ctx, h, spec, integrationBaseOpts(brokers))
+	cons, err := newConsumerWithOptions[evtTest](ctx, h, spec, integrationBaseOpts(brokers))
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}
@@ -139,14 +172,14 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	o.RetryDelay = 50 * time.Millisecond
 
 	spec := HandlerSpec{Topic: topic, Group: fmt.Sprintf("grp-dlq-%d", base), MaxRetries: 2}
-	cons, err := NewConsumer[evtTest](ctx, h, spec, o)
+	cons, err := newConsumerWithOptions[evtTest](ctx, h, spec, o)
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}
 	defer func() { _ = cons.Close() }()
 	go func() { _ = cons.Run() }()
 
-	prod, err := NewProducer[evtTest](ctx, integrationBaseOpts(brokers))
+	prod, err := newProducerWithOptions[evtTest](ctx, integrationBaseOpts(brokers))
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
 	}
@@ -182,7 +215,7 @@ func TestIntegrationCloseCancelsRun(t *testing.T) {
 
 	h := HandlerFunc[evtTest](func(ctx context.Context, msg evtTest, mc Ctx) error { return nil })
 	spec := HandlerSpec{Topic: topic, Group: fmt.Sprintf("grp-stop-%d", time.Now().UnixNano())}
-	cons, err := NewConsumer[evtTest](ctx, h, spec, integrationBaseOpts(brokers))
+	cons, err := newConsumerWithOptions[evtTest](ctx, h, spec, integrationBaseOpts(brokers))
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}

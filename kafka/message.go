@@ -21,7 +21,7 @@ type Ctx struct {
 }
 
 // Handler processes a message of type T. The ctx argument is supplied by the
-// library — derived from the context given at New(...)/NewConsumer(...),
+// library — derived from the constructor context/NewConsumer context,
 // including the consumer's run-loop cancelation — and is used for cooperative
 // shutdown of long-running Handle bodies; applications never pass it in.
 // Implementations must be safe for concurrent use (the consumer may invoke
@@ -49,8 +49,4 @@ func splitBrokers(s string) []string {
 		}
 	}
 	return out
-}
-
-func joinBrokers(bs []string) string {
-	return strings.Join(bs, ",")
 }

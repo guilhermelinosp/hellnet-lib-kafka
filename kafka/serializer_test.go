@@ -6,7 +6,7 @@ import (
 )
 
 func TestBuildSerializerJSON(t *testing.T) {
-	o := Default()
+	o := testDefaultOptions()
 	o.DefaultSerializer = "json"
 	s, err := o.buildSerializer(context.Background())
 	if err != nil {
@@ -18,7 +18,7 @@ func TestBuildSerializerJSON(t *testing.T) {
 }
 
 func TestBuildSerializerAvro(t *testing.T) {
-	o := Default()
+	o := testDefaultOptions()
 	o.DefaultSerializer = "avro"
 	if _, err := o.buildSerializer(context.Background()); err == nil {
 		t.Fatal("expected error without SchemaRegistryURL")
@@ -34,7 +34,7 @@ func TestBuildSerializerAvro(t *testing.T) {
 }
 
 func TestBuildSerializerProtobuf(t *testing.T) {
-	o := Default()
+	o := testDefaultOptions()
 	o.DefaultSerializer = "protobuf"
 	if _, err := o.buildSerializer(context.Background()); err == nil {
 		t.Fatal("expected error without SchemaRegistryURL")
@@ -49,15 +49,17 @@ func TestBuildSerializerProtobuf(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvSelectsAvro(t *testing.T) {
+func TestOptionsFromEnvSelectsAvro(t *testing.T) {
+	t.Setenv("HELLNET_KAFKA_BROKERS", "127.0.0.1:9092")
+	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "plaintext")
 	t.Setenv("HELLNET_KAFKA_DEFAULT_SERIALIZER", "avro")
 	t.Setenv("HELLNET_KAFKA_SCHEMA_REGISTRY_URL", "http://localhost:8085")
-	o := LoadFromEnv()
-	s, err := o.ensureSerializer(context.Background())
+	bus, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.(*AvroSerializer); !ok {
-		t.Fatalf("expected *AvroSerializer, got %T", s)
+	defer func() { _ = bus.Close() }()
+	if _, ok := bus.serializer.(*AvroSerializer); !ok {
+		t.Fatalf("expected *AvroSerializer, got %T", bus.serializer)
 	}
 }

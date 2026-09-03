@@ -19,7 +19,7 @@ func backoff(base time.Duration, attempt int) time.Duration {
 		d = 10 * time.Millisecond
 	}
 	// ±20% jitter to avoid thundering herds.
-	jitter := time.Duration(rand.Int63n(int64(d/5)*2+1)) - d/5 //nolint:gosec // G404: jitter only, non-crypto by design.
+	jitter := time.Duration(rand.Int63n(int64(d/5)*2+1)) - d/5 // #nosec G404 -- scheduling jitter is non-cryptographic.
 	return d + jitter
 }
 
@@ -42,7 +42,7 @@ func fetchBackoff(attempt int) time.Duration {
 		d = fetchBackoffMax
 	}
 	// ±20% jitter to avoid thundering herds.
-	jitter := time.Duration(rand.Int63n(int64(d/5)*2+1)) - d/5 //nolint:gosec // G404: jitter only, non-crypto by design.
+	jitter := time.Duration(rand.Int63n(int64(d/5)*2+1)) - d/5 // #nosec G404 -- scheduling jitter is non-cryptographic.
 	return d + jitter
 }
 

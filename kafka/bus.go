@@ -10,15 +10,13 @@ import (
 )
 
 // Bus is the message bus: an idempotent producer with retry and a circuit
-// breaker, plus DLQ publishing. Create it with New/MustNew (env-first): the
-// context is captured once at construction and propagated internally —
-// applications never pass ctx to operations.
+// breaker, plus DLQ publishing. New/MustNew use an internal background context.
 type Bus struct {
 	opts       Options
 	writer     *kafka.Writer
 	breaker    *gobreaker.CircuitBreaker
 	serializer Serializer
-	baseCtx    context.Context // captured once at New(...); parent of every operation
+	baseCtx    context.Context // constructor context; parent of every operation
 }
 
 // newBus builds a Bus from validated options. ctx becomes the base context:
@@ -55,8 +53,7 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 	b.breaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name: "kafka-produce",
 		ReadyToTrip: func(c gobreaker.Counts) bool {
-			//nolint:gosec // G115: CircuitBreakerCount validated >= 1; far below MaxUint32.
-			return c.ConsecutiveFailures >= uint32(opts.CircuitBreakerCount)
+			return c.ConsecutiveFailures >= uint32(opts.CircuitBreakerCount) // #nosec G115 -- validate rejects values outside uint32.
 		},
 	})
 	return b, nil
@@ -66,7 +63,7 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 // is protected by TimeoutProduce -> CircuitBreaker (the Go counterpart of the
 // .NET Polly pipeline). On breaker open, it fails fast until it half-opens.
 //
-// The context is captured once at New(...) and propagated internally: each
+// The constructor context is captured once and propagated internally: each
 // attempt derives a fresh timeout (TimeoutProduce) from the stored base
 // context. Applications never pass ctx to operations; cancelling the base
 // context stops in-flight produces cooperatively.
