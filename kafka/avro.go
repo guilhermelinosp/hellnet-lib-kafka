@@ -20,17 +20,13 @@ var avroCodec = avro.Config{
 //
 //	[magic 0x00][schema id: 4 bytes BE][avro payload]
 //
-// The subject follows the Confluent convention "{topic}-value"; the schema
-// must be pre-registered (e.g. via hellnet-lib-schema scripts/register.sh).
-// Structs map to the Avro schema via avro tags (see example/main.go).
+// The subject is the topic name itself. Structs map to the Avro schema via
+// avro tags (see example/main.go).
 type AvroSerializer struct {
 	registry *registryClient
 }
 
 // NewAvroSerializer builds an Avro serializer bound to the registry URL.
-// Standalone use: fetches derive from context.Background(). When built through
-// New/NewConsumer (buildSerializer), the registry client instead derives from
-// the context captured once at construction.
 func NewAvroSerializer(url, path string) (*AvroSerializer, error) {
 	if url == "" {
 		return nil, fmt.Errorf("kafka: schema registry URL is empty")
@@ -38,13 +34,12 @@ func NewAvroSerializer(url, path string) (*AvroSerializer, error) {
 	return &AvroSerializer{registry: newRegistryClient(context.Background(), url, path)}, nil
 }
 
-// Serialize encodes value with the latest schema for "{topic}-value" and
-// prepends the Confluent wire header.
+// Serialize encodes value with the latest schema for the topic and prepends
+// the Confluent wire header.
 func (a *AvroSerializer) Serialize(topic string, value any) ([]byte, error) {
-	subject := topic + "-value"
-	schemaStr, id, err := a.registry.latestSchema(subject)
+	schemaStr, id, err := a.registry.latestSchema(topic)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: avro schema %s: %w", subject, err)
+		return nil, fmt.Errorf("kafka: avro schema %s: %w", topic, err)
 	}
 	codec, err := avro.Parse(schemaStr)
 	if err != nil {
@@ -67,10 +62,9 @@ func (a *AvroSerializer) Deserialize(_ string, data []byte, out any) error {
 	if len(data) < 5 || data[0] != 0 {
 		return fmt.Errorf("kafka: invalid confluent avro wire format")
 	}
-	id := binary.BigEndian.Uint32(data[1:5])
-	schemaStr, err := a.registry.schemaByID(int(id))
+	schemaStr, err := a.registry.schemaByID(int(binary.BigEndian.Uint32(data[1:5])))
 	if err != nil {
-		return fmt.Errorf("kafka: avro schema id %d: %w", id, err)
+		return fmt.Errorf("kafka: avro schema id: %w", err)
 	}
 	codec, err := avro.Parse(schemaStr)
 	if err != nil {
