@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/segmentio/kafka-go"
 	"github.com/sony/gobreaker"
@@ -92,4 +93,19 @@ func (b *Bus) Publish(msg Message) error {
 // Close releases the underlying writer.
 func (b *Bus) Close() error {
 	return b.writer.Close()
+}
+
+// Ping checks if the Kafka broker is reachable by attempting to dial.
+func (b *Bus) Ping(ctx context.Context) error {
+	// Try to dial one of the brokers to verify connectivity
+	for _, broker := range b.opts.Brokers {
+		dialer := &net.Dialer{Timeout: 5 * time.Second}
+		conn, err := dialer.DialContext(ctx, "tcp", broker)
+		if err != nil {
+			continue
+		}
+		conn.Close()
+		return nil
+	}
+	return fmt.Errorf("kafka: no brokers reachable")
 }
