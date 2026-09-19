@@ -3,7 +3,7 @@ module github.com/guilhermelinosp/hellnet-lib-kafka
 go 1.27.0
 
 require (
-	github.com/guilhermelinosp/hellnet-lib-environments v1.1.21
+	github.com/guilhermelinosp/hellnet-lib-environments v1.1.24
 	github.com/iskorotkov/avro/v2 v2.34.0
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/sony/gobreaker v1.0.0
