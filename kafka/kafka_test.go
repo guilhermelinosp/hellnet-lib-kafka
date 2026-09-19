@@ -225,11 +225,9 @@ func TestNewLoadsDotEnv(t *testing.T) {
 	}
 }
 
-func TestNewUsesHellnetFallback(t *testing.T) {
-	t.Setenv("HELLNET_KAFKA_BROKERS", "")
-	t.Setenv("HELLNET_BROKERS", "127.0.0.1:39092")
-	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "")
-	t.Setenv("HELLNET_SECURITY_PROTOCOL", "plaintext")
+func TestNewUsesHellnetBrokers(t *testing.T) {
+	t.Setenv("HELLNET_KAFKA_BROKERS", "127.0.0.1:39092")
+	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "plaintext")
 
 	bus, err := New()
 	if err != nil {
@@ -237,7 +235,7 @@ func TestNewUsesHellnetFallback(t *testing.T) {
 	}
 	defer func() { _ = bus.Close() }()
 	if got := bus.opts.Brokers; len(got) != 1 || got[0] != "127.0.0.1:39092" {
-		t.Fatalf("Brokers = %v, want HELLNET_BROKERS fallback", got)
+		t.Fatalf("Brokers = %v, want value from HELLNET_KAFKA_BROKERS", got)
 	}
 }
 
