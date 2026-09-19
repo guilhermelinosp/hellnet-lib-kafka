@@ -104,8 +104,12 @@ func (b *Bus) Ping(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			return fmt.Errorf("kafka: close dial connection: %w", err)
+		}
 		return nil
 	}
 	return fmt.Errorf("kafka: no brokers reachable")
 }
+
+// Option configures the Bus at construction time.
