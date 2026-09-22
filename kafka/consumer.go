@@ -36,8 +36,13 @@ type Consumer[T Message] struct {
 }
 
 // NewConsumer follows the zero-config New pattern: it creates the base context,
-// loads .env, and resolves all options from HELLNET_KAFKA_*.
-func NewConsumer[T Message](h Handler[T], spec HandlerSpec) (*Consumer[T], error) {
+// loads .env, and resolves all options from HELLNET_KAFKA_*. The topic is
+// derived from T.MessageType(); the consumer group comes from
+// HELLNET_KAFKA_CONSUMER_GROUP unless overridden via spec.Group.
+//
+//	consumer, err := kafka.NewConsumer(handler)                 // group do env
+//	consumer, err := kafka.NewConsumer(handler, spec)           // spec override
+func NewConsumer[T Message](h Handler[T], spec ...HandlerSpec) (*Consumer[T], error) {
 	if h == nil {
 		return nil, fmt.Errorf("kafka: handler is nil")
 	}
@@ -45,7 +50,11 @@ func NewConsumer[T Message](h Handler[T], spec HandlerSpec) (*Consumer[T], error
 	if err != nil {
 		return nil, err
 	}
-	return newConsumerWithBus(h, spec, bus)
+	s := HandlerSpec{}
+	if len(spec) > 0 {
+		s = spec[0]
+	}
+	return newConsumerWithBus(h, s, bus)
 }
 
 func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*Consumer[T], error) {
