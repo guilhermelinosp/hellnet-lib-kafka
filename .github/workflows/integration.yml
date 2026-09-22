@@ -1,0 +1,40 @@
+name: integration
+
+# Runs the real-broker Kafka integration tests (build tag `integration`) so
+# they are exercised in CI against a Redpanda service container, not just
+# locally via kubectl port-forward.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      redpanda:
+        image: redpandadata/redpanda:v24.1.7
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "rpk cluster health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      HELLNET_TEST_KAFKA_BROKERS: localhost:9092
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run integration tests
+        run: go test -tags integration -race ./kafka/

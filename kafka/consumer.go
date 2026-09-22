@@ -177,12 +177,7 @@ func (c *Consumer[T]) processMessage(ctx context.Context, m kafka.Message) error
 		if attempt > 0 && !c.sleepThroughShutdown(ctx, backoff(c.opts.RetryDelay, attempt-1)) {
 			return nil // shutdown during handler-retry backoff
 		}
-		lastErr = c.handler.Handle(ctx, msg, Ctx{
-			Topic:     m.Topic,
-			Partition: m.Partition,
-			Offset:    m.Offset,
-			Key:       m.Key,
-		})
+		lastErr = c.handle(ctx, msg, m)
 		if lastErr == nil {
 			break
 		}
@@ -201,6 +196,23 @@ func (c *Consumer[T]) processMessage(ctx context.Context, m kafka.Message) error
 
 // sleepThroughShutdown sleeps for d; false means the run context ended while
 // sleeping — the caller must treat it as cooperative shutdown.
+func (c *Consumer[T]) handle(ctx context.Context, msg T, m kafka.Message) error {
+	fn := func(ctx context.Context) error {
+		return c.handler.Handle(ctx, msg, Ctx{
+			Topic:     m.Topic,
+			Partition: m.Partition,
+			Offset:    m.Offset,
+			Key:       m.Key,
+		})
+	}
+	if c.bus != nil && c.bus.ops != nil {
+		return c.bus.ops.Span(ctx, "kafka.consume", func(ctx context.Context) error {
+			return fn(ctx)
+		})
+	}
+	return fn(ctx)
+}
+
 func (c *Consumer[T]) sleepThroughShutdown(ctx context.Context, d time.Duration) bool {
 	return sleepCtx(ctx, d) == nil
 }

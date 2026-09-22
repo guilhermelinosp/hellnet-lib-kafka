@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/segmentio/kafka-go"
 	"github.com/sony/gobreaker"
 )
@@ -17,6 +18,14 @@ type Bus struct {
 	breaker    *gobreaker.CircuitBreaker
 	serializer Serializer
 	baseCtx    context.Context // constructor context; parent of every operation
+	ops        telemetry.Client
+}
+
+// WithTelemetry attaches a telemetry client so publishes emit a kafka.publish
+// OTel span. Optional: a nil client keeps the library working un-instrumented.
+func (b *Bus) WithTelemetry(ops telemetry.Client) *Bus {
+	b.ops = ops
+	return b
 }
 
 // newBus builds a Bus from validated options. ctx becomes the base context:
@@ -69,24 +78,33 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 // context stops in-flight produces cooperatively.
 func (b *Bus) Publish(msg Message) error {
 	topic := TopicName(b.opts, msg.MessageType())
-	payload, err := b.serializer.Serialize(topic, msg)
-	if err != nil {
-		return fmt.Errorf("kafka: serialize %s: %w", topic, err)
-	}
-	km := kafka.Message{Topic: topic, Value: payload}
-
-	_, err = b.breaker.Execute(func() (any, error) {
-		wctx, cancel := context.WithTimeout(b.baseCtx, b.opts.TimeoutProduce)
-		defer cancel()
-		if err := b.writer.WriteMessages(wctx, km); err != nil {
-			return nil, fmt.Errorf("%w", err)
+	publish := func() error {
+		payload, err := b.serializer.Serialize(topic, msg)
+		if err != nil {
+			return fmt.Errorf("kafka: serialize %s: %w", topic, err)
 		}
-		return nil, nil
-	})
-	if err != nil {
-		return fmt.Errorf("kafka: publish %s: %w", topic, err)
+		km := kafka.Message{Topic: topic, Value: payload}
+
+		_, err = b.breaker.Execute(func() (any, error) {
+			wctx, cancel := context.WithTimeout(b.baseCtx, b.opts.TimeoutProduce)
+			defer cancel()
+			if err := b.writer.WriteMessages(wctx, km); err != nil {
+				return nil, fmt.Errorf("%w", err)
+			}
+			return nil, nil
+		})
+		if err != nil {
+			return fmt.Errorf("kafka: publish %s: %w", topic, err)
+		}
+		return nil
 	}
-	return nil
+
+	if b.ops != nil {
+		return b.ops.Span(b.baseCtx, "kafka.publish", func(context.Context) error {
+			return publish()
+		})
+	}
+	return publish()
 }
 
 // Close releases the underlying writer.
