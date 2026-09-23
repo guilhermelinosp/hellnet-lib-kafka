@@ -50,10 +50,10 @@ func TestBuildSerializerProtobuf(t *testing.T) {
 }
 
 func TestOptionsFromEnvSelectsAvro(t *testing.T) {
-	t.Setenv("HELLNET_KAFKA_BROKERS", "127.0.0.1:9092")
-	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "plaintext")
-	t.Setenv("HELLNET_KAFKA_DEFAULT_SERIALIZER", "avro")
-	t.Setenv("HELLNET_KAFKA_SCHEMA_REGISTRY_URL", "http://localhost:8085")
+	t.Setenv("KAFKA_BROKERS", "127.0.0.1:9092")
+	t.Setenv("KAFKA_SECURITY_PROTOCOL", "plaintext")
+	t.Setenv("KAFKA_DEFAULT_SERIALIZER", "avro")
+	t.Setenv("KAFKA_SCHEMA_REGISTRY_URL", "http://localhost:8085")
 	bus, err := New(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)

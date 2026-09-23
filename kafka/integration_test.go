@@ -18,14 +18,14 @@ import (
 // Usage (tools namespace on kind, via kubectl port-forward):
 //
 //	kubectl port-forward -n tools svc/redpanda 19092:9092
-//	export HELLNET_TEST_KAFKA_BROKERS=localhost:19092
+//	export TEST_KAFKA_BROKERS=localhost:19092
 //	go test -tags integration -count=1 -run TestIntegration ./kafka/
 
 func integrationBrokers(t *testing.T) []string {
 	t.Helper()
-	b := os.Getenv("HELLNET_TEST_KAFKA_BROKERS")
+	b := os.Getenv("TEST_KAFKA_BROKERS")
 	if b == "" {
-		t.Skip("HELLNET_TEST_KAFKA_BROKERS not set")
+		t.Skip("TEST_KAFKA_BROKERS not set")
 	}
 	return []string{b}
 }

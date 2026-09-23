@@ -26,7 +26,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      HELLNET_TEST_KAFKA_BROKERS: localhost:9092
+      TEST_KAFKA_BROKERS: localhost:9092
     steps:
       - uses: actions/checkout@v7
 

@@ -8,7 +8,7 @@
 //   - Handler[T]/HandlerFunc[T] process consumed messages.
 //   - Bus is the low-level shared producer for multiple message types.
 //
-// It features env-first configuration (HELLNET_KAFKA_* via .env through
+// It features env-first configuration (KAFKA_* via .env through
 // hellnet-lib-environments), three serializers (JSON, Avro and Protobuf with
 // Schema Registry and the Confluent wire format), timeout/retry/circuit
 // breaker on produce, and graceful degradation. All public constructors are
@@ -26,38 +26,28 @@ import (
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 )
 
-// kafkaEnv reads a HELLNET_KAFKA_<name> env var (with generic HELLNET_<name>
-// fallback), defaulting to def.
+// kafkaEnv reads a KAFKA_<name> env var, defaulting to def.
 func kafkaEnv(name, def string) string {
-	if v := environments.Get("HELLNET_KAFKA_"+name, ""); v != "" {
-		return v
-	}
-	return environments.Get("HELLNET_"+name, def)
+	return environments.GetString("", "", "KAFKA_"+name, def)
 }
 
-// kafkaInt reads an int HELLNET_KAFKA_<name> env var (HELLNET_<name> fallback).
+// kafkaInt reads an int KAFKA_<name> env var.
 func kafkaInt(name string, def int) int {
-	if environments.Get("HELLNET_KAFKA_"+name, "") != "" {
-		return environments.GetInt("HELLNET_KAFKA_"+name, strconv.Itoa(def))
-	}
-	return environments.GetInt("HELLNET_"+name, strconv.Itoa(def))
+	return environments.GetInt("KAFKA_"+name, strconv.Itoa(def))
 }
 
-// kafkaBool reads a bool HELLNET_KAFKA_<name> env var (HELLNET_<name> fallback).
+// kafkaBool reads a bool KAFKA_<name> env var.
 func kafkaBool(name string, def bool) bool {
-	if environments.Get("HELLNET_KAFKA_"+name, "") != "" {
-		return environments.GetBool("HELLNET_KAFKA_"+name, strconv.FormatBool(def))
-	}
-	return environments.GetBool("HELLNET_"+name, strconv.FormatBool(def))
+	return environments.GetBool("KAFKA_"+name, strconv.FormatBool(def))
 }
 
 // Options configures the Kafka bus. All values are env-first overridable.
 type Options struct {
 	// Brokers is the list of bootstrap servers.
 	Brokers []string
-	// ConsumerGroup is required for consumers (HELLNET_KAFKA_CONSUMER_GROUP).
+	// ConsumerGroup is required for consumers (KAFKA_CONSUMER_GROUP).
 	ConsumerGroup string
-	// TopicPrefix optionally prefixes every topic (HELLNET_KAFKA_TOPIC_PREFIX).
+	// TopicPrefix optionally prefixes every topic (KAFKA_TOPIC_PREFIX).
 	TopicPrefix string
 	// SecurityProtocol: plaintext, ssl, sasl_plaintext, sasl_ssl.
 	SecurityProtocol string
@@ -96,24 +86,24 @@ type Options struct {
 // validate checks required and supported option values.
 func (o *Options) validate() error {
 	if len(o.Brokers) == 0 {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_BROKERS is empty")
+		return fmt.Errorf("kafka: KAFKA_BROKERS is empty")
 	}
 	if o.MaxRetries < 1 {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_MAX_RETRIES must be >= 1")
+		return fmt.Errorf("kafka: KAFKA_MAX_RETRIES must be >= 1")
 	}
 	if o.CircuitBreakerCount < 1 {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT must be >= 1")
+		return fmt.Errorf("kafka: KAFKA_CIRCUIT_BREAKER_COUNT must be >= 1")
 	}
 	if uint64(o.CircuitBreakerCount) > uint64(math.MaxUint32) {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT must be <= %d", uint64(math.MaxUint32))
+		return fmt.Errorf("kafka: KAFKA_CIRCUIT_BREAKER_COUNT must be <= %d", uint64(math.MaxUint32))
 	}
 	switch o.SecurityProtocol {
 	case "plaintext", "ssl", "sasl_plaintext", "sasl_ssl":
 	default:
-		return fmt.Errorf("kafka: unsupported HELLNET_KAFKA_SECURITY_PROTOCOL %q", o.SecurityProtocol)
+		return fmt.Errorf("kafka: unsupported KAFKA_SECURITY_PROTOCOL %q", o.SecurityProtocol)
 	}
 	if (o.SecurityProtocol == "sasl_plaintext" || o.SecurityProtocol == "sasl_ssl") && o.SASLPassword == "" {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_SASL_PASSWORD is required for %s", o.SecurityProtocol)
+		return fmt.Errorf("kafka: KAFKA_SASL_PASSWORD is required for %s", o.SecurityProtocol)
 	}
 	return nil
 }
@@ -129,25 +119,25 @@ func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
 		return JSONSerializer{}, nil
 	case "avro":
 		if o.SchemaRegistryURL == "" {
-			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
+			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
 		}
 		return &AvroSerializer{registry: newRegistryClient(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath)}, nil
 	case "protobuf":
 		if o.SchemaRegistryURL == "" {
-			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
+			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
 		}
 		return &ProtobufSerializer{registry: newRegistryClient(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath)}, nil
 	default:
-		return nil, fmt.Errorf("kafka: unsupported HELLNET_KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
+		return nil, fmt.Errorf("kafka: unsupported KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
 	}
 }
 
 // New follows the hellnet-lib-telemetry constructor pattern: it creates the
 // base context, loads .env before reading configuration, and builds Options
-// entirely from HELLNET_KAFKA_* variables and defaults. A consumer group is
+// entirely from KAFKA_* variables and defaults. A consumer group is
 // only required if a consumer will be started.
 func New(ctx context.Context, ops telemetry.Client) (*Bus, error) {
-	// Env-first: load .env before reading HELLNET_KAFKA_* variables. Best
+	// Env-first: load .env before reading KAFKA_* variables. Best
 	// effort: without a file (or with a parse error), process env still applies.
 	_ = environments.LoadDotEnv()
 

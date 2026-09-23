@@ -16,7 +16,7 @@ type Producer[T Message] struct {
 }
 
 // NewProducer follows the zero-config New pattern: it creates the base context,
-// loads .env, and resolves all options from HELLNET_KAFKA_*.
+// loads .env, and resolves all options from KAFKA_*.
 func NewProducer[T Message](ctx context.Context, ops telemetry.Client) (*Producer[T], error) {
 	bus, err := New(ctx, ops)
 	if err != nil {

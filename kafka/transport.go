@@ -36,7 +36,7 @@ func newDialer(o Options) *kafka.Dialer {
 	return d
 }
 
-// buildTLS builds a tls.Config from HELLNET_KAFKA_SSL_* options.
+// buildTLS builds a tls.Config from KAFKA_SSL_* options.
 func buildTLS(o Options) (*tls.Config, error) {
 	// #nosec G402 -- SSLInsecureSkipVerify is an explicit operator opt-in option.
 	cfg := &tls.Config{
@@ -57,7 +57,7 @@ func buildTLS(o Options) (*tls.Config, error) {
 	return cfg, nil
 }
 
-// buildSASL maps HELLNET_KAFKA_SASL_* to a kafka-go mechanism.
+// buildSASL maps KAFKA_SASL_* to a kafka-go mechanism.
 func buildSASL(o Options) (sasl.Mechanism, error) {
 	user, pass := o.SASLUsername, o.SASLPassword
 	switch strings.ToUpper(o.SASLMechanism) {

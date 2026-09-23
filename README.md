@@ -54,7 +54,7 @@ As peças da escola:
 // interruptor geral da app: criado UMA vez, quem administra depois é a própria lib
 ctx := context.Background()
 
-prod, _ := kafka.NewProducer[MeuEvento](ctx, ops) // publica MeuEvento; config vem das envs HELLNET_KAFKA_*
+prod, _ := kafka.NewProducer[MeuEvento](ctx, ops) // publica MeuEvento; config vem das envs KAFKA_*
 cons, _ := kafka.NewConsumer[MeuEvento](ctx, ops)
 _ = cons.Configure(handler, spec) // registra handler, tópico e grupo
 ```
@@ -79,7 +79,7 @@ As próximas seções mostram o detalhe técnico completo de cada peça.
 ## Features
 
 - **Tipado por generics** — producer/consumer/handler presos ao tipo da mensagem
-- **Env-first** — toda config via `HELLNET_KAFKA_*` (.env via `hellnet-lib-environments`)
+- **Env-first** — toda config via `KAFKA_*` (.env via `hellnet-lib-environments`)
 - **3 serializers** — JSON, Avro e Protobuf (Schema Registry, wire format Confluent)
 - **Resiliência** — timeout → retry exponencial → circuit breaker (produce)
 - **Dead Letter Queue** — handler falhou após `MaxRetries` → `{topic}.dlq` com headers `dlq.*`
@@ -121,7 +121,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	// Producer tipado pelo tipo da mensagem (env-first; lê HELLNET_KAFKA_* via .env).
+	// Producer tipado pelo tipo da mensagem (env-first; lê KAFKA_* via .env).
 	prod, err := kafka.NewProducer[orderCreated](ctx)
 	if err != nil {
 		log.Fatal(err)
@@ -183,8 +183,8 @@ type HandlerFunc[T Message] func(ctx context.Context, msg T, mctx Ctx) error
 
 type HandlerSpec struct {
 	Topic      string // sobrescreve "{prefix}.{messageType}"
-	Group      string // sobrescreve HELLNET_KAFKA_CONSUMER_GROUP
-	MaxRetries int    // sobrescreve HELLNET_KAFKA_MAX_RETRIES
+	Group      string // sobrescreve KAFKA_CONSUMER_GROUP
+	MaxRetries int    // sobrescreve KAFKA_MAX_RETRIES
 }
 ```
 
@@ -212,13 +212,13 @@ bus.Close()
 
 > 🧒 Serializer é o **molde de recados**: todo recado precisa sair com o formato certo (JSON, Avro ou Protobuf).
 
-`HELLNET_KAFKA_DEFAULT_SERIALIZER` seleciona o formato. Para avro/protobuf, o
-`HELLNET_KAFKA_SCHEMA_REGISTRY_URL` é obrigatório e o schema deve estar registrado
+`KAFKA_DEFAULT_SERIALIZER` seleciona o formato. Para avro/protobuf, o
+`KAFKA_SCHEMA_REGISTRY_URL` é obrigatório e o schema deve estar registrado
 no subject `{topic}-value`.
 
 ### JSON (default)
 ```bash
-HELLNET_KAFKA_DEFAULT_SERIALIZER=json
+KAFKA_DEFAULT_SERIALIZER=json
 ```
 `encoding/json` do struct — sem Schema Registry, sem envelope.
 
@@ -249,9 +249,9 @@ Wire format Confluent idêntico ao Avro.
 
 > 🧒 Quando um recado dá problema, tentamos de novo algumas vezes antes de arquivá-lo na **gaveta dos erros** (DLQ).
 
-- **Produce**: `Timeout (HELLNET_KAFKA_TIMEOUT_PRODUCE_MS)` → circuit breaker
-  (`HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT` falhas → OPEN → half-open → CLOSED).
-- **Consumer**: handler com retry exponencial (`MaxRetries` + `HELLNET_KAFKA_RETRY_DELAY_MS`).
+- **Produce**: `Timeout (KAFKA_TIMEOUT_PRODUCE_MS)` → circuit breaker
+  (`KAFKA_CIRCUIT_BREAKER_COUNT` falhas → OPEN → half-open → CLOSED).
+- **Consumer**: handler com retry exponencial (`MaxRetries` + `KAFKA_RETRY_DELAY_MS`).
 - **DLQ**: após esgotar, a mensagem vai para `{topic}.dlq` com headers:
   - `dlq.reason` · `dlq.original.topic` · `dlq.original.partition` · `dlq.original.offset`
 
@@ -271,7 +271,7 @@ Wire format Confluent idêntico ao Avro.
 
 ## Schema Registry
 
-| Registry | Caminho ccompat | `HELLNET_KAFKA_SCHEMA_REGISTRY_PATH` |
+| Registry | Caminho ccompat | `KAFKA_SCHEMA_REGISTRY_PATH` |
 |---|---|---|
 | Apicurio | `/apis/ccompat/v6/subjects/...` | `(default)` |
 | Redpanda / Confluent | `/subjects/...` (raiz) | `none` |
@@ -283,22 +283,22 @@ O subject segue a convenção Confluente `{topic}-value`
 
 | Env | Default | Descrição |
 |---|---|---|
-| `HELLNET_KAFKA_BROKERS` | `kafka.hellnet.com.br:9094` | Lista de brokers (vírgula) |
-| `HELLNET_KAFKA_SECURITY_PROTOCOL` | `sasl_ssl` | plaintext, ssl, sasl_plaintext, sasl_ssl |
-| `HELLNET_KAFKA_SASL_MECHANISM` | `SCRAM-SHA-512` | PLAIN, SCRAM-SHA-256/512 |
-| `HELLNET_KAFKA_SASL_USERNAME` | `hellnet-app` | Usuário SCRAM |
-| `HELLNET_KAFKA_SASL_PASSWORD` | — | Obrigatório p/ sasl_* |
-| `HELLNET_KAFKA_SSL_CA_LOCATION` | — | CA certificate |
-| `HELLNET_KAFKA_CONSUMER_GROUP` | `""` | Obrigatório p/ consumers |
-| `HELLNET_KAFKA_TOPIC_PREFIX` | `hellnet` | Prefixo dos topics (`{prefix}.{messageType}`) |
-| `HELLNET_KAFKA_DEFAULT_SERIALIZER` | `json` | json, avro, protobuf |
-| `HELLNET_KAFKA_SCHEMA_REGISTRY_URL` | — | Obrigatório p/ avro/protobuf |
-| `HELLNET_KAFKA_SCHEMA_REGISTRY_PATH` | `/apis/ccompat/v6` | `none` = raiz (Redpanda/Confluent) |
-| `HELLNET_KAFKA_IDEMPOTENT` | `true` | Producer idempotente |
-| `HELLNET_KAFKA_MAX_RETRIES` | `3` | Total de attempts (handler) |
-| `HELLNET_KAFKA_RETRY_DELAY_MS` | `200` | Backoff base (exponencial + jitter), inteiro em ms |
-| `HELLNET_KAFKA_TIMEOUT_PRODUCE_MS` | `30000` | Timeout de produce, inteiro em ms |
-| `HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT` | `5` | Falhas antes de abrir o circuit breaker |
+| `KAFKA_BROKERS` | `kafka.hellnet.com.br:9094` | Lista de brokers (vírgula) |
+| `KAFKA_SECURITY_PROTOCOL` | `sasl_ssl` | plaintext, ssl, sasl_plaintext, sasl_ssl |
+| `KAFKA_SASL_MECHANISM` | `SCRAM-SHA-512` | PLAIN, SCRAM-SHA-256/512 |
+| `KAFKA_SASL_USERNAME` | `hellnet-app` | Usuário SCRAM |
+| `KAFKA_SASL_PASSWORD` | — | Obrigatório p/ sasl_* |
+| `KAFKA_SSL_CA_LOCATION` | — | CA certificate |
+| `KAFKA_CONSUMER_GROUP` | `""` | Obrigatório p/ consumers |
+| `KAFKA_TOPIC_PREFIX` | `hellnet` | Prefixo dos topics (`{prefix}.{messageType}`) |
+| `KAFKA_DEFAULT_SERIALIZER` | `json` | json, avro, protobuf |
+| `KAFKA_SCHEMA_REGISTRY_URL` | — | Obrigatório p/ avro/protobuf |
+| `KAFKA_SCHEMA_REGISTRY_PATH` | `/apis/ccompat/v6` | `none` = raiz (Redpanda/Confluent) |
+| `KAFKA_IDEMPOTENT` | `true` | Producer idempotente |
+| `KAFKA_MAX_RETRIES` | `3` | Total de attempts (handler) |
+| `KAFKA_RETRY_DELAY_MS` | `200` | Backoff base (exponencial + jitter), inteiro em ms |
+| `KAFKA_TIMEOUT_PRODUCE_MS` | `30000` | Timeout de produce, inteiro em ms |
+| `KAFKA_CIRCUIT_BREAKER_COUNT` | `5` | Falhas antes de abrir o circuit breaker |
 
 `.env` local (Redpanda kind) em `.env.example` — copie para `.env` (gitignored).
 
@@ -321,7 +321,7 @@ os testes pulam. Para rodar local apontando para o Redpanda do cluster
 ```bash
 kubectl port-forward -n tools svc/redpanda 19092:9092 &
 
-HELLNET_TEST_KAFKA_BROKERS=localhost:19092 \
+TEST_KAFKA_BROKERS=localhost:19092 \
 go test -tags integration -count=1 -run TestIntegration ./kafka/
 ```
 

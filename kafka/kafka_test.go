@@ -82,11 +82,11 @@ func TestTraceContextRoundTripThroughHeaders(t *testing.T) {
 }
 
 func TestDefaultsFromEnv(t *testing.T) {
-	t.Setenv("HELLNET_KAFKA_BROKERS", "127.0.0.1:9092,127.0.0.1:9093")
-	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "plaintext")
-	t.Setenv("HELLNET_KAFKA_MAX_RETRIES", "7")
+	t.Setenv("KAFKA_BROKERS", "127.0.0.1:9092,127.0.0.1:9093")
+	t.Setenv("KAFKA_SECURITY_PROTOCOL", "plaintext")
+	t.Setenv("KAFKA_MAX_RETRIES", "7")
 
-	t.Setenv("HELLNET_KAFKA_TOPIC_PREFIX", "")
+	t.Setenv("KAFKA_TOPIC_PREFIX", "")
 	bus, err := New(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -111,11 +111,11 @@ func TestDefaultsFromEnv(t *testing.T) {
 // land as plain integers ("30000"): ParseDuration rejects bare integers, so
 // these are read through GetInt × time.Millisecond (hellnet-lib-cache style).
 func TestEnvMillisKnobsParsePlainIntegers(t *testing.T) {
-	t.Setenv("HELLNET_KAFKA_RETRY_DELAY_MS", "30000")
-	t.Setenv("HELLNET_KAFKA_TIMEOUT_PRODUCE_MS", "45000")
+	t.Setenv("KAFKA_RETRY_DELAY_MS", "30000")
+	t.Setenv("KAFKA_TIMEOUT_PRODUCE_MS", "45000")
 
-	t.Setenv("HELLNET_KAFKA_BROKERS", "127.0.0.1:9092")
-	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "plaintext")
+	t.Setenv("KAFKA_BROKERS", "127.0.0.1:9092")
+	t.Setenv("KAFKA_SECURITY_PROTOCOL", "plaintext")
 	bus, err := New(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -198,9 +198,9 @@ func testOfflineOptions() Options {
 }
 
 func TestNewLoadsEnvironmentWithInternalContext(t *testing.T) {
-	t.Setenv("HELLNET_KAFKA_BROKERS", "127.0.0.1:19092")
-	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "plaintext")
-	t.Setenv("HELLNET_KAFKA_TOPIC_PREFIX", "from-env")
+	t.Setenv("KAFKA_BROKERS", "127.0.0.1:19092")
+	t.Setenv("KAFKA_SECURITY_PROTOCOL", "plaintext")
+	t.Setenv("KAFKA_TOPIC_PREFIX", "from-env")
 
 	bus, err := New(context.Background(), nil)
 	if err != nil {
@@ -223,15 +223,15 @@ func TestNewLoadsDotEnv(t *testing.T) {
 	t.Setenv("HELLNET_ENVIRONMENT", "test")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(
-		"HELLNET_KAFKA_BROKERS=127.0.0.1:29092\n"+
-			"HELLNET_KAFKA_SECURITY_PROTOCOL=plaintext\n"+
-			"HELLNET_KAFKA_TOPIC_PREFIX=from-dotenv\n"), 0o600); err != nil {
+		"KAFKA_BROKERS=127.0.0.1:29092\n"+
+			"KAFKA_SECURITY_PROTOCOL=plaintext\n"+
+			"KAFKA_TOPIC_PREFIX=from-dotenv\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{
-		"HELLNET_KAFKA_BROKERS", "HELLNET_BROKERS",
-		"HELLNET_KAFKA_SECURITY_PROTOCOL", "HELLNET_SECURITY_PROTOCOL",
-		"HELLNET_KAFKA_TOPIC_PREFIX", "HELLNET_TOPIC_PREFIX",
+		"KAFKA_BROKERS", "BROKERS",
+		"KAFKA_SECURITY_PROTOCOL", "SECURITY_PROTOCOL",
+		"KAFKA_TOPIC_PREFIX", "TOPIC_PREFIX",
 	} {
 		t.Setenv(key, "")
 		if err := os.Unsetenv(key); err != nil {
@@ -253,19 +253,11 @@ func TestNewLoadsDotEnv(t *testing.T) {
 	}
 }
 
-func TestNewUsesHellnetFallback(t *testing.T) {
-	t.Setenv("HELLNET_KAFKA_BROKERS", "")
-	t.Setenv("HELLNET_BROKERS", "127.0.0.1:39092")
-	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "")
-	t.Setenv("HELLNET_SECURITY_PROTOCOL", "plaintext")
-
-	bus, err := New(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = bus.Close() }()
-	if got := bus.opts.Brokers; len(got) != 1 || got[0] != "127.0.0.1:39092" {
-		t.Fatalf("Brokers = %v, want HELLNET_BROKERS fallback", got)
+func TestNewIgnoresGenericEnvironment(t *testing.T) {
+	t.Setenv("KAFKA_BROKERS", "")
+	t.Setenv("BROKERS", "127.0.0.1:39092")
+	if _, err := New(context.Background(), nil); err == nil {
+		t.Fatal("expected missing KAFKA_BROKERS error")
 	}
 }
 

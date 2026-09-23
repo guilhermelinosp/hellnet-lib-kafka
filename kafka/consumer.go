@@ -71,7 +71,7 @@ func (c *Consumer[T]) Configure(h Handler[T], spec ...HandlerSpec) error {
 		group = s.Group
 	}
 	if group == "" {
-		return fmt.Errorf("kafka: consumer group required (HELLNET_KAFKA_CONSUMER_GROUP or HandlerSpec.Group)")
+		return fmt.Errorf("kafka: consumer group required (KAFKA_CONSUMER_GROUP or HandlerSpec.Group)")
 	}
 	var zero T
 	topic := s.resolveTopic(c.opts, zero.MessageType())
