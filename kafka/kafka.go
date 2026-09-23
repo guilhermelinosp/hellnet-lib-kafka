@@ -28,7 +28,7 @@ import (
 
 // kafkaEnv reads a KAFKA_<name> env var, defaulting to def.
 func kafkaEnv(name, def string) string {
-	return environments.GetString("", "", "KAFKA_"+name, def)
+	return environments.Get("KAFKA_"+name, def)
 }
 
 // kafkaInt reads an int KAFKA_<name> env var.
