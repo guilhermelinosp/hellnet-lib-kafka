@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/guilhermelinosp/hellnet-lib-environments/environments"
@@ -32,12 +33,12 @@ func kafkaEnv(name, def string) string {
 
 // kafkaInt reads an int KAFKA_<name> env var.
 func kafkaInt(name string, def int) int {
-	return environments.GetInt("", "", "KAFKA_"+name, def)
+	return environments.GetInt("KAFKA_"+name, strconv.Itoa(def))
 }
 
 // kafkaBool reads a bool KAFKA_<name> env var.
 func kafkaBool(name string, def bool) bool {
-	return environments.GetBool("", "", "KAFKA_"+name, def)
+	return environments.GetBool("KAFKA_"+name, strconv.FormatBool(def))
 }
 
 // Options configures the Kafka bus. All values are env-first overridable.
