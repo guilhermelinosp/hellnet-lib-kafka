@@ -21,13 +21,6 @@ type Bus struct {
 	ops        telemetry.Client
 }
 
-// WithTelemetry attaches a telemetry client so publishes emit a kafka.publish
-// OTel span. Optional: a nil client keeps the library working un-instrumented.
-func (b *Bus) WithTelemetry(ops telemetry.Client) *Bus {
-	b.ops = ops
-	return b
-}
-
 // newBus builds a Bus from validated options. ctx becomes the base context:
 // every operation derives its own per-attempt contexts (produce timeouts,
 // cancellation) from it instead of taking a caller-supplied parameter.
@@ -78,12 +71,13 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 // context stops in-flight produces cooperatively.
 func (b *Bus) Publish(msg Message) error {
 	topic := TopicName(b.opts, msg.MessageType())
-	publish := func() error {
+	publish := func(ctx context.Context) error {
 		payload, err := b.serializer.Serialize(topic, msg)
 		if err != nil {
 			return fmt.Errorf("kafka: serialize %s: %w", topic, err)
 		}
 		km := kafka.Message{Topic: topic, Value: payload}
+		injectTrace(ctx, &km)
 
 		_, err = b.breaker.Execute(func() (any, error) {
 			wctx, cancel := context.WithTimeout(b.baseCtx, b.opts.TimeoutProduce)
@@ -100,11 +94,11 @@ func (b *Bus) Publish(msg Message) error {
 	}
 
 	if b.ops != nil {
-		return b.ops.Span(b.baseCtx, "kafka.publish", func(context.Context) error {
-			return publish()
+		return b.ops.WithSpan("kafka.publish", func(ctx context.Context) error {
+			return publish(ctx)
 		})
 	}
-	return publish()
+	return publish(b.baseCtx)
 }
 
 // Close releases the underlying writer.

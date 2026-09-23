@@ -6,6 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type orderCreated struct {
@@ -53,13 +58,36 @@ func TestHandlerSpecResolve(t *testing.T) {
 	}
 }
 
+func TestTraceContextRoundTripThroughHeaders(t *testing.T) {
+	previous := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	defer otel.SetTextMapPropagator(previous)
+
+	traceID, _ := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
+	spanID, _ := trace.SpanIDFromHex("0102030405060708")
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+	message := kafka.Message{}
+
+	injectTrace(ctx, &message)
+	got := trace.SpanContextFromContext(extractTrace(context.Background(), message))
+
+	if got.TraceID() != traceID || got.SpanID() != spanID || !got.IsSampled() {
+		t.Fatalf("trace context = %s/%s sampled=%t, want %s/%s sampled=true", got.TraceID(), got.SpanID(), got.IsSampled(), traceID, spanID)
+	}
+}
+
 func TestDefaultsFromEnv(t *testing.T) {
 	t.Setenv("HELLNET_KAFKA_BROKERS", "127.0.0.1:9092,127.0.0.1:9093")
 	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "plaintext")
 	t.Setenv("HELLNET_KAFKA_MAX_RETRIES", "7")
 
 	t.Setenv("HELLNET_KAFKA_TOPIC_PREFIX", "")
-	bus, err := New()
+	bus, err := New(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +116,7 @@ func TestEnvMillisKnobsParsePlainIntegers(t *testing.T) {
 
 	t.Setenv("HELLNET_KAFKA_BROKERS", "127.0.0.1:9092")
 	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "plaintext")
-	bus, err := New()
+	bus, err := New(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +202,7 @@ func TestNewLoadsEnvironmentWithInternalContext(t *testing.T) {
 	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "plaintext")
 	t.Setenv("HELLNET_KAFKA_TOPIC_PREFIX", "from-env")
 
-	bus, err := New()
+	bus, err := New(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +240,7 @@ func TestNewLoadsDotEnv(t *testing.T) {
 	}
 	t.Chdir(dir)
 
-	bus, err := New()
+	bus, err := New(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +259,7 @@ func TestNewUsesHellnetFallback(t *testing.T) {
 	t.Setenv("HELLNET_KAFKA_SECURITY_PROTOCOL", "")
 	t.Setenv("HELLNET_SECURITY_PROTOCOL", "plaintext")
 
-	bus, err := New()
+	bus, err := New(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

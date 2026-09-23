@@ -54,8 +54,9 @@ As peças da escola:
 // interruptor geral da app: criado UMA vez, quem administra depois é a própria lib
 ctx := context.Background()
 
-prod, _ := kafka.NewProducer[MeuEvento](ctx) // clipa recados de MeuEvento; config vem das envs HELLNET_KAFKA_*
-cons, _ := kafka.NewConsumer[MeuEvento](ctx, handler, spec) // monitor lê da fileira do spec e usa o manual (handler)
+prod, _ := kafka.NewProducer[MeuEvento](ctx, ops) // publica MeuEvento; config vem das envs HELLNET_KAFKA_*
+cons, _ := kafka.NewConsumer[MeuEvento](ctx, ops)
+_ = cons.Configure(handler, spec) // registra handler, tópico e grupo
 ```
 
 As próximas seções mostram o detalhe técnico completo de cada peça.
@@ -69,7 +70,7 @@ As próximas seções mostram o detalhe técnico completo de cada peça.
 | `IMessageHandler<T>.HandleAsync` | `Handler[T].Handle(ctx, msg, Ctx)` |
 | `IMessageContext` | `Ctx{Topic, Partition, Offset, Key}` |
 | `MessageHandlerAttribute` | `HandlerSpec{Topic, Group, MaxRetries}` |
-| `AddHellnetKafka()` (DI) | `kafka.NewProducer[T](ctx)` / `kafka.NewConsumer[T](ctx, h, spec, opts...)` |
+| `AddHellnetKafka()` (DI) | `kafka.NewProducer[T](ctx, ops)` / `kafka.NewConsumer[T](ctx, ops)` + `Configure` |
 | Confluent.Kafka + Polly | `segmentio/kafka-go` + `sony/gobreaker` |
 | `AvroMessageSerializer` | `kafka.AvroSerializer` (wire format Confluent) |
 | `ProtobufMessageSerializer` | `kafka.ProtobufSerializer` (wire format Confluent) |

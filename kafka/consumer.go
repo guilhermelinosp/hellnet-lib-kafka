@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -35,71 +36,64 @@ type Consumer[T Message] struct {
 	cancelRun context.CancelFunc
 }
 
-// NewConsumer follows the zero-config New pattern: it creates the base context,
-// loads .env, and resolves all options from HELLNET_KAFKA_*. The topic is
-// derived from T.MessageType(); the consumer group comes from
-// HELLNET_KAFKA_CONSUMER_GROUP unless overridden via spec.Group.
-//
-//	consumer, err := kafka.NewConsumer(handler)                 // group do env
-//	consumer, err := kafka.NewConsumer(handler, spec)           // spec override
-func NewConsumer[T Message](h Handler[T], spec ...HandlerSpec) (*Consumer[T], error) {
-	if h == nil {
-		return nil, fmt.Errorf("kafka: handler is nil")
-	}
-	bus, err := New()
+// NewConsumer creates a consumer with the caller's context and telemetry.
+// Configure must be called before Run to attach the handler and topic/group.
+func NewConsumer[T Message](ctx context.Context, ops telemetry.Client) (*Consumer[T], error) {
+	bus, err := New(ctx, ops)
 	if err != nil {
 		return nil, err
+	}
+	runCtx, cancelRun := context.WithCancel(bus.baseCtx)
+	return &Consumer[T]{
+		opts:       bus.opts,
+		bus:        bus,
+		serializer: bus.serializer,
+		runCtx:     runCtx,
+		cancelRun:  cancelRun,
+	}, nil
+}
+
+// Configure attaches the handler and resolves the topic and consumer group.
+// It must be called once before Run.
+func (c *Consumer[T]) Configure(h Handler[T], spec ...HandlerSpec) error {
+	if h == nil {
+		return fmt.Errorf("kafka: handler is nil")
+	}
+	if c.reader != nil {
+		return fmt.Errorf("kafka: consumer already configured")
 	}
 	s := HandlerSpec{}
 	if len(spec) > 0 {
 		s = spec[0]
 	}
-	return newConsumerWithBus(h, s, bus)
-}
-
-func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*Consumer[T], error) {
-	o := bus.opts
-	group := o.ConsumerGroup
-	if spec.Group != "" {
-		group = spec.Group
+	group := c.opts.ConsumerGroup
+	if s.Group != "" {
+		group = s.Group
 	}
 	if group == "" {
-		_ = bus.Close()
-		return nil, fmt.Errorf("kafka: consumer group required (HELLNET_KAFKA_CONSUMER_GROUP or HandlerSpec.Group)")
+		return fmt.Errorf("kafka: consumer group required (HELLNET_KAFKA_CONSUMER_GROUP or HandlerSpec.Group)")
 	}
 	var zero T
-	topic := spec.resolveTopic(o, zero.MessageType())
-
-	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        o.Brokers,
+	topic := s.resolveTopic(c.opts, zero.MessageType())
+	c.handler = h
+	c.spec = s
+	c.topic = topic
+	c.group = group
+	c.maxRetries = c.opts.MaxRetries
+	if s.MaxRetries > 0 {
+		c.maxRetries = s.MaxRetries
+	}
+	c.reader = kafka.NewReader(kafka.ReaderConfig{
+		Brokers:        c.opts.Brokers,
 		GroupID:        group,
 		Topic:          topic,
 		MinBytes:       10e3,
 		MaxBytes:       10e6,
 		CommitInterval: time.Second,
-		StartOffset:    kafka.FirstOffset, // new groups replay from the beginning
-		Dialer:         newDialer(o),
+		StartOffset:    kafka.FirstOffset,
+		Dialer:         newDialer(c.opts),
 	})
-
-	maxRetries := o.MaxRetries
-	if spec.MaxRetries > 0 {
-		maxRetries = spec.MaxRetries
-	}
-	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- cancelRun is stored and invoked by Close for cooperative shutdown.
-	return &Consumer[T]{
-			opts:       o,
-			handler:    h,
-			spec:       spec,
-			reader:     r,
-			bus:        bus,
-			serializer: bus.serializer,
-			topic:      topic,
-			group:      group,
-			maxRetries: maxRetries,
-			runCtx:     runCtx,
-			cancelRun:  cancelRun,
-		},
-		nil
+	return nil
 }
 
 // Run consumes messages until the internal run context is cancelled by Close
@@ -114,12 +108,18 @@ func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*C
 // The run context is supplied by the library. Use RunContext when a caller
 // needs a bounded run while using the zero-config constructor.
 func (c *Consumer[T]) Run() error {
+	if c.reader == nil {
+		return fmt.Errorf("kafka: consumer is not configured; call Configure first")
+	}
 	return c.run(c.runCtx)
 }
 
 // RunContext consumes until ctx, Close, or the constructor context is
 // cancelled. It is useful with the zero-config NewConsumer constructor.
 func (c *Consumer[T]) RunContext(ctx context.Context) error {
+	if c.reader == nil {
+		return fmt.Errorf("kafka: consumer is not configured; call Configure first")
+	}
 	if ctx == nil {
 		return c.Run()
 	}
@@ -165,6 +165,7 @@ func (c *Consumer[T]) run(ctx context.Context) error {
 // retries (exponential backoff), lands it in the DLQ when retries are
 // exhausted, and commits the offset. The returned error is fatal to Run.
 func (c *Consumer[T]) processMessage(ctx context.Context, m kafka.Message) error {
+	ctx = extractTrace(ctx, m)
 	var msg T
 	out := any(&msg)
 	// For pointer message types (the natural Go/protobuf style), allocate
@@ -236,6 +237,9 @@ func isCtxErr(err error) bool {
 // broker round-trip — and then releases the reader and the DLQ bus.
 func (c *Consumer[T]) Close() error {
 	c.cancelRun()
+	if c.reader == nil {
+		return c.bus.Close()
+	}
 	cerr := c.reader.Close()
 	berr := c.bus.Close()
 	if cerr != nil {

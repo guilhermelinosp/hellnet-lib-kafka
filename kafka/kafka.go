@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/guilhermelinosp/hellnet-lib-environments/environments"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 )
 
 // kafkaEnv reads a HELLNET_KAFKA_<name> env var (with generic HELLNET_<name>
@@ -145,9 +146,7 @@ func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
 // base context, loads .env before reading configuration, and builds Options
 // entirely from HELLNET_KAFKA_* variables and defaults. A consumer group is
 // only required if a consumer will be started.
-func New() (*Bus, error) {
-	ctx := context.Background()
-
+func New(ctx context.Context, ops telemetry.Client) (*Bus, error) {
 	// Env-first: load .env before reading HELLNET_KAFKA_* variables. Best
 	// effort: without a file (or with a parse error), process env still applies.
 	_ = environments.LoadDotEnv()
@@ -175,7 +174,12 @@ func New() (*Bus, error) {
 	if o.SchemaRegistryPath == "none" || o.SchemaRegistryPath == "/" {
 		o.SchemaRegistryPath = ""
 	}
-	return newBusWithOptions(ctx, o)
+	b, err := newBusWithOptions(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	b.ops = ops
+	return b, nil
 }
 
 func newWithOptions(ctx context.Context, opts Options) (*Bus, error) {
@@ -198,8 +202,8 @@ func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 }
 
 // MustNew is like New but panics if construction fails.
-func MustNew() *Bus {
-	b, err := New()
+func MustNew(ctx context.Context, ops telemetry.Client) *Bus {
+	b, err := New(ctx, ops)
 	if err != nil {
 		panic(err)
 	}
