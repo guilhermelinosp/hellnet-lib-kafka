@@ -12,7 +12,7 @@ import (
 // backoff returns the delay for attempt i (0-based): base * 2^i plus jitter.
 func backoff(base time.Duration, attempt int) time.Duration {
 	d := base
-	for i := 0; i < attempt; i++ {
+	for range attempt {
 		d *= 2
 	}
 	if d <= 0 {
@@ -78,8 +78,8 @@ func (b *Bus) publishDLQ(ctx context.Context, opts Options, originalTopic string
 		Headers: []kafka.Header{
 			{Key: "dlq.reason", Value: []byte(reason)},
 			{Key: "dlq.original.topic", Value: []byte(originalTopic)},
-			{Key: "dlq.original.partition", Value: []byte(fmt.Sprintf("%d", partition))},
-			{Key: "dlq.original.offset", Value: []byte(fmt.Sprintf("%d", offset))},
+			{Key: "dlq.original.partition", Value: fmt.Appendf(nil, "%d", partition)},
+			{Key: "dlq.original.offset", Value: fmt.Appendf(nil, "%d", offset)},
 		},
 	}
 	_, err := b.breaker.Execute(func() (any, error) {

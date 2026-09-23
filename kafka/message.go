@@ -43,7 +43,7 @@ func splitBrokers(s string) []string {
 		return nil
 	}
 	var out []string
-	for _, b := range strings.Split(s, ",") {
+	for b := range strings.SplitSeq(s, ",") {
 		if b = strings.TrimSpace(b); b != "" {
 			out = append(out, b)
 		}

@@ -249,9 +249,9 @@ Wire format Confluent idêntico ao Avro.
 
 > 🧒 Quando um recado dá problema, tentamos de novo algumas vezes antes de arquivá-lo na **gaveta dos erros** (DLQ).
 
-- **Produce**: `Timeout (KAFKA_TIMEOUT_PRODUCE_MS)` → circuit breaker
+- **Produce**: `Timeout (KAFKA_TIMEOUT_PRODUCE)` → circuit breaker
   (`KAFKA_CIRCUIT_BREAKER_COUNT` falhas → OPEN → half-open → CLOSED).
-- **Consumer**: handler com retry exponencial (`MaxRetries` + `KAFKA_RETRY_DELAY_MS`).
+- **Consumer**: handler com retry exponencial (`MaxRetries` + `KAFKA_RETRY_DELAY`).
 - **DLQ**: após esgotar, a mensagem vai para `{topic}.dlq` com headers:
   - `dlq.reason` · `dlq.original.topic` · `dlq.original.partition` · `dlq.original.offset`
 
@@ -296,14 +296,14 @@ O subject segue a convenção Confluente `{topic}-value`
 | `KAFKA_SCHEMA_REGISTRY_PATH` | `/apis/ccompat/v6` | `none` = raiz (Redpanda/Confluent) |
 | `KAFKA_IDEMPOTENT` | `true` | Producer idempotente |
 | `KAFKA_MAX_RETRIES` | `3` | Total de attempts (handler) |
-| `KAFKA_RETRY_DELAY_MS` | `200` | Backoff base (exponencial + jitter), inteiro em ms |
-| `KAFKA_TIMEOUT_PRODUCE_MS` | `30000` | Timeout de produce, inteiro em ms |
+| `KAFKA_RETRY_DELAY` | `200ms` | Backoff base (exponencial + jitter) |
+| `KAFKA_TIMEOUT_PRODUCE` | `30s` | Timeout de produce |
 | `KAFKA_CIRCUIT_BREAKER_COUNT` | `5` | Falhas antes de abrir o circuit breaker |
 
 `.env` local (Redpanda kind) em `.env.example` — copie para `.env` (gitignored).
 
-> Os knobs sufixados `_MS` são lidos como **inteiros em milissegundos**
-> (`GetInt` × `time.Millisecond`) — o mesmo formato do hellnet-lib-cache.
+> Os knobs de tempo usam o formato de duração do Go (`ms`, `s`, `m`), lido por
+> `environments.GetDuration`.
 
 ## Testes
 

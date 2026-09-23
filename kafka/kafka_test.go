@@ -108,11 +108,10 @@ func TestDefaultsFromEnv(t *testing.T) {
 }
 
 // TestEnvMillisKnobsParsePlainIntegers proves the millisecond-suffixed knobs
-// land as plain integers ("30000"): ParseDuration rejects bare integers, so
-// these are read through GetInt × time.Millisecond (hellnet-lib-cache style).
+// use Go duration strings so every time-based environment uses one format.
 func TestEnvMillisKnobsParsePlainIntegers(t *testing.T) {
-	t.Setenv("KAFKA_RETRY_DELAY_MS", "30000")
-	t.Setenv("KAFKA_TIMEOUT_PRODUCE_MS", "45000")
+	t.Setenv("KAFKA_RETRY_DELAY", "30s")
+	t.Setenv("KAFKA_TIMEOUT_PRODUCE", "45s")
 
 	t.Setenv("KAFKA_BROKERS", "127.0.0.1:9092")
 	t.Setenv("KAFKA_SECURITY_PROTOCOL", "plaintext")
@@ -256,9 +255,12 @@ func TestNewLoadsDotEnv(t *testing.T) {
 func TestNewIgnoresGenericEnvironment(t *testing.T) {
 	t.Setenv("KAFKA_BROKERS", "")
 	t.Setenv("BROKERS", "127.0.0.1:39092")
-	if _, err := New(context.Background(), nil); err == nil {
-		t.Fatal("expected missing KAFKA_BROKERS error")
-	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected missing KAFKA_BROKERS panic")
+		}
+	}()
+	_, _ = New(context.Background(), nil)
 }
 
 func TestPrivateConstructorCapturesContext(t *testing.T) {

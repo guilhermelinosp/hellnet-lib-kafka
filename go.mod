@@ -13,6 +13,8 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
+replace github.com/guilhermelinosp/hellnet-lib-environments => /Users/guilhermelino/repositories/hellnet-lib-environments
+
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

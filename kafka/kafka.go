@@ -26,21 +26,6 @@ import (
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 )
 
-// kafkaEnv reads a KAFKA_<name> env var, defaulting to def.
-func kafkaEnv(name, def string) string {
-	return environments.Get("KAFKA_"+name, def)
-}
-
-// kafkaInt reads an int KAFKA_<name> env var.
-func kafkaInt(name string, def int) int {
-	return environments.GetInt("KAFKA_"+name, strconv.Itoa(def))
-}
-
-// kafkaBool reads a bool KAFKA_<name> env var.
-func kafkaBool(name string, def bool) bool {
-	return environments.GetBool("KAFKA_"+name, strconv.FormatBool(def))
-}
-
 // Options configures the Kafka bus. All values are env-first overridable.
 type Options struct {
 	// Brokers is the list of bootstrap servers.
@@ -81,6 +66,35 @@ type Options struct {
 	SchemaRegistryPath string
 	// DeadLetterTopic overrides the default "{topic}.dlq".
 	DeadLetterTopic string
+}
+
+func Default() Options {
+	return Options{SecurityProtocol: "sasl_ssl", SASLMechanism: "SCRAM-SHA-512",
+		SASLUsername: "hellnet-app", Idempotent: true, MaxRetries: 3,
+		RetryDelay: 200 * time.Millisecond, TimeoutProduce: 30 * time.Second,
+		CircuitBreakerCount: 5, DefaultSerializer: "json",
+		SchemaRegistryPath: "/apis/ccompat/v6"}
+}
+
+func (o *Options) from(base Options) {
+	o.Brokers = splitBrokers(environments.GetString("KAFKA_BROKERS"))
+	o.ConsumerGroup = environments.GetString("KAFKA_CONSUMER_GROUP", base.ConsumerGroup)
+	o.TopicPrefix = environments.GetString("KAFKA_TOPIC_PREFIX", base.TopicPrefix)
+	o.SecurityProtocol = environments.GetString("KAFKA_SECURITY_PROTOCOL", base.SecurityProtocol)
+	o.SASLMechanism = environments.GetString("KAFKA_SASL_MECHANISM", base.SASLMechanism)
+	o.SASLUsername = environments.GetString("KAFKA_SASL_USERNAME", base.SASLUsername)
+	o.SASLPassword = environments.GetString("KAFKA_SASL_PASSWORD", base.SASLPassword)
+	o.SSLCA = environments.GetString("KAFKA_SSL_CA_LOCATION", base.SSLCA)
+	o.SSLInsecureSkipVerify = environments.GetBool("KAFKA_SSL_INSECURE_SKIP_VERIFY", strconv.FormatBool(base.SSLInsecureSkipVerify))
+	o.Idempotent = environments.GetBool("KAFKA_IDEMPOTENT", strconv.FormatBool(base.Idempotent))
+	o.MaxRetries = environments.GetInt("KAFKA_MAX_RETRIES", strconv.Itoa(base.MaxRetries))
+	o.RetryDelay = environments.GetDuration("KAFKA_RETRY_DELAY", base.RetryDelay.String())
+	o.TimeoutProduce = environments.GetDuration("KAFKA_TIMEOUT_PRODUCE", base.TimeoutProduce.String())
+	o.CircuitBreakerCount = environments.GetInt("KAFKA_CIRCUIT_BREAKER_COUNT", strconv.Itoa(base.CircuitBreakerCount))
+	o.DeadLetterTopic = environments.GetString("KAFKA_DEAD_LETTER_TOPIC", base.DeadLetterTopic)
+	o.DefaultSerializer = environments.GetString("KAFKA_DEFAULT_SERIALIZER", base.DefaultSerializer)
+	o.SchemaRegistryURL = environments.GetString("KAFKA_SCHEMA_REGISTRY_URL", base.SchemaRegistryURL)
+	o.SchemaRegistryPath = environments.GetString("KAFKA_SCHEMA_REGISTRY_PATH", base.SchemaRegistryPath)
 }
 
 // validate checks required and supported option values.
@@ -141,26 +155,8 @@ func New(ctx context.Context, ops telemetry.Client) (*Bus, error) {
 	// effort: without a file (or with a parse error), process env still applies.
 	_ = environments.LoadDotEnv()
 
-	o := Options{
-		Brokers:               splitBrokers(kafkaEnv("BROKERS", "")),
-		ConsumerGroup:         kafkaEnv("CONSUMER_GROUP", ""),
-		TopicPrefix:           kafkaEnv("TOPIC_PREFIX", ""),
-		SecurityProtocol:      kafkaEnv("SECURITY_PROTOCOL", "sasl_ssl"),
-		SASLMechanism:         kafkaEnv("SASL_MECHANISM", "SCRAM-SHA-512"),
-		SASLUsername:          kafkaEnv("SASL_USERNAME", "hellnet-app"),
-		SASLPassword:          kafkaEnv("SASL_PASSWORD", ""),
-		SSLCA:                 kafkaEnv("SSL_CA_LOCATION", ""),
-		SSLInsecureSkipVerify: kafkaBool("SSL_INSECURE_SKIP_VERIFY", false),
-		Idempotent:            kafkaBool("IDEMPOTENT", true),
-		MaxRetries:            kafkaInt("MAX_RETRIES", 3),
-		RetryDelay:            time.Duration(kafkaInt("RETRY_DELAY_MS", 200)) * time.Millisecond,
-		TimeoutProduce:        time.Duration(kafkaInt("TIMEOUT_PRODUCE_MS", 30000)) * time.Millisecond,
-		CircuitBreakerCount:   kafkaInt("CIRCUIT_BREAKER_COUNT", 5),
-		DeadLetterTopic:       kafkaEnv("DEAD_LETTER_TOPIC", ""),
-		DefaultSerializer:     kafkaEnv("DEFAULT_SERIALIZER", "json"),
-		SchemaRegistryURL:     kafkaEnv("SCHEMA_REGISTRY_URL", ""),
-		SchemaRegistryPath:    kafkaEnv("SCHEMA_REGISTRY_PATH", "/apis/ccompat/v6"),
-	}
+	o := Default()
+	o.from(o)
 	if o.SchemaRegistryPath == "none" || o.SchemaRegistryPath == "/" {
 		o.SchemaRegistryPath = ""
 	}
