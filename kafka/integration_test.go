@@ -192,7 +192,7 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	brokers := integrationBrokers(t)
 	ctx := context.Background()
 	base := time.Now().UnixNano()
-	topic := "hellnet.it.test.v1"
+	topic := fmt.Sprintf("hellnet.it.test.v1.%d", base)
 	ensureIntegrationTopic(t, brokers, topic)
 
 	boom := errors.New("always fails")
