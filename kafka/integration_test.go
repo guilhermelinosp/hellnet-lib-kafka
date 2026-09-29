@@ -192,7 +192,9 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	brokers := integrationBrokers(t)
 	ctx := context.Background()
 	base := time.Now().UnixNano()
-	topic := fmt.Sprintf("hellnet.it.test.v1.%d", base)
+	o := integrationBaseOpts(brokers)
+	o.TopicPrefix = fmt.Sprintf("hellnet-%d", base)
+	topic := TopicName(o, (evtTest{}).MessageType())
 	ensureIntegrationTopic(t, brokers, topic)
 
 	boom := errors.New("always fails")
@@ -202,7 +204,6 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 		return boom
 	})
 
-	o := integrationBaseOpts(brokers)
 	o.MaxRetries = 2
 	o.RetryDelay = 50 * time.Millisecond
 
