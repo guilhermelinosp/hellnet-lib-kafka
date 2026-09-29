@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,42 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
+
+type failingMessageWriter struct {
+	calls  int
+	cancel context.CancelFunc
+}
+
+func (w *failingMessageWriter) WriteMessages(context.Context, ...kafka.Message) error {
+	w.calls++
+	if w.cancel != nil {
+		w.cancel()
+	}
+	return errors.New("broker unavailable")
+}
+
+type commitTrackingReader struct {
+	commits int
+}
+
+func (r *commitTrackingReader) FetchMessage(context.Context) (kafka.Message, error) {
+	return kafka.Message{}, context.Canceled
+}
+
+func (r *commitTrackingReader) CommitMessages(context.Context, ...kafka.Message) error {
+	r.commits++
+	return nil
+}
+
+func (r *commitTrackingReader) Close() error { return nil }
+
+type failingSerializer struct{}
+
+func (failingSerializer) Serialize(string, any) ([]byte, error) { return nil, nil }
+
+func (failingSerializer) Deserialize(string, []byte, any) error {
+	return errors.New("decode failed")
+}
 
 type orderCreated struct {
 	OrderID string  `json:"orderId"`
@@ -171,6 +208,87 @@ func TestDLQTopic(t *testing.T) {
 	if got := dlqTopic("hellnet.order.created.v1"); got != "hellnet.order.created.v1.dlq" {
 		t.Fatalf("dlqTopic = %q", got)
 	}
+}
+
+func TestDLQFailureDoesNotCommitOffset(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	writer := &failingMessageWriter{cancel: cancel}
+	reader := &commitTrackingReader{}
+	bus := &Bus{
+		opts:      testOfflineOptions(),
+		dlqWriter: writer,
+	}
+	consumer := &Consumer[orderCreated]{
+		opts:       bus.opts,
+		bus:        bus,
+		reader:     reader,
+		serializer: failingSerializer{},
+		group:      "orders",
+	}
+
+	err := consumer.processMessage(ctx, kafka.Message{
+		Topic:     "orders",
+		Partition: 2,
+		Offset:    17,
+		Value:     []byte("bad"),
+	})
+	if err != nil {
+		t.Fatalf("processMessage = %v, want cooperative shutdown", err)
+	}
+	if writer.calls != 1 {
+		t.Fatalf("DLQ writes = %d, want 1 before shutdown", writer.calls)
+	}
+	if reader.commits != 0 {
+		t.Fatalf("commits = %d, want 0 when DLQ fails", reader.commits)
+	}
+}
+
+func TestPublishDLQPreservesMessageMetadata(t *testing.T) {
+	writer := &capturingMessageWriter{}
+	bus := &Bus{dlqWriter: writer}
+	original := kafka.Message{
+		Topic:     "orders",
+		Partition: 2,
+		Offset:    17,
+		Key:       []byte("order-17"),
+		Value:     []byte("payload"),
+		Headers:   []kafka.Header{{Key: "traceparent", Value: []byte("00-trace")}},
+	}
+
+	if err := bus.publishDLQ(context.Background(), Options{TimeoutProduce: time.Second}, original, "handler failed", "handler", 3); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.messages) != 1 {
+		t.Fatalf("DLQ writes = %d, want 1", len(writer.messages))
+	}
+	got := writer.messages[0]
+	if string(got.Key) != "order-17" || string(got.Value) != "payload" {
+		t.Fatalf("DLQ metadata lost: key=%q value=%q", got.Key, got.Value)
+	}
+	for _, want := range []string{"traceparent", "dlq.attempts", "dlq.timestamp", "dlq.error.type"} {
+		if !hasHeader(got.Headers, want) {
+			t.Fatalf("DLQ headers missing %q: %#v", want, got.Headers)
+		}
+	}
+}
+
+type capturingMessageWriter struct {
+	messages []kafka.Message
+}
+
+func (w *capturingMessageWriter) WriteMessages(_ context.Context, messages ...kafka.Message) error {
+	w.messages = append(w.messages, messages...)
+	return nil
+}
+
+func hasHeader(headers []kafka.Header, key string) bool {
+	for _, header := range headers {
+		if header.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func TestJSONSerializer(t *testing.T) {

@@ -3,6 +3,7 @@
 package kafka
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -216,7 +217,12 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}
-	defer func() { _ = cons.Close() }()
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = cons.Close()
+		}
+	})
 	go func() { _ = cons.Run() }()
 
 	prod, err := newProducerWithOptions[evtTest](ctx, integrationBaseOpts(brokers))
@@ -240,9 +246,52 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 		case <-ticker.C:
 			if attempts.Load() >= int32(o.MaxRetries)+1 {
 				fmt.Printf("DLQ path confirmed: handler attempted %d times\n", attempts.Load())
-				return
+				goto dlq
 			}
 		}
+	}
+
+dlq:
+	dlqReader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:     brokers,
+		GroupID:     fmt.Sprintf("grp-dlq-reader-%d", base),
+		Topic:       topic + ".dlq",
+		MinBytes:    1,
+		MaxBytes:    10e6,
+		MaxWait:     500 * time.Millisecond,
+		StartOffset: kafka.FirstOffset,
+	})
+	defer func() { _ = dlqReader.Close() }()
+	readCtx, cancelRead := context.WithTimeout(ctx, 10*time.Second)
+	dlqMessage, err := dlqReader.FetchMessage(readCtx)
+	cancelRead()
+	if err != nil {
+		t.Fatalf("read DLQ message: %v", err)
+	}
+	if !bytes.Contains(dlqMessage.Value, []byte("poison-1")) {
+		t.Fatalf("DLQ value = %q, want poison message", dlqMessage.Value)
+	}
+	for _, header := range []string{"dlq.attempts", "dlq.timestamp", "dlq.error.type"} {
+		if !hasHeader(dlqMessage.Headers, header) {
+			t.Fatalf("DLQ headers missing %q: %#v", header, dlqMessage.Headers)
+		}
+	}
+
+	if err := cons.Close(); err != nil {
+		t.Fatalf("close source consumer: %v", err)
+	}
+	closed = true
+	consAgain, err := newConsumerWithOptions[evtTest](ctx, h, spec, o)
+	if err != nil {
+		t.Fatalf("reopen source consumer: %v", err)
+	}
+	go func() { _ = consAgain.Run() }()
+	time.Sleep(1 * time.Second)
+	if err := consAgain.Close(); err != nil {
+		t.Fatalf("close reopened source consumer: %v", err)
+	}
+	if got := attempts.Load(); got != int32(o.MaxRetries)+1 {
+		t.Fatalf("handler attempts after committed DLQ = %d, want %d", got, o.MaxRetries+1)
 	}
 }
 

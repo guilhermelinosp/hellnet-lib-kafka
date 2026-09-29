@@ -16,6 +16,7 @@ import (
 type Bus struct {
 	opts       Options
 	writer     *kafka.Writer
+	dlqWriter  messageWriter
 	breaker    *gobreaker.CircuitBreaker
 	serializer Serializer
 	baseCtx    context.Context // constructor context; parent of every operation
@@ -47,6 +48,7 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 	b := &Bus{
 		opts:       opts,
 		writer:     w,
+		dlqWriter:  w,
 		serializer: opts.Serializer,
 		baseCtx:    ctx,
 	}

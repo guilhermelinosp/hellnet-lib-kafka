@@ -12,6 +12,12 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+type messageReader interface {
+	FetchMessage(context.Context) (kafka.Message, error)
+	CommitMessages(context.Context, ...kafka.Message) error
+	Close() error
+}
+
 // Consumer runs a Handler[T] against a topic derived from T's MessageType
 // (or overridden by HandlerSpec). Failed handlers are retried with exponential
 // backoff and, once exhausted, the message goes to the Dead Letter Queue.
@@ -22,7 +28,7 @@ type Consumer[T Message] struct {
 	opts       Options
 	handler    Handler[T]
 	spec       HandlerSpec
-	reader     *kafka.Reader
+	reader     messageReader
 	bus        *Bus
 	serializer Serializer
 	topic      string
@@ -177,9 +183,15 @@ func (c *Consumer[T]) processMessage(ctx context.Context, m kafka.Message) error
 		out = any(msg)
 	}
 	if err := c.serializer.Deserialize(m.Topic, m.Value, out); err != nil {
-		_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, m.Offset,
-			"deserialize: "+err.Error(), m.Value)
-		_ = c.reader.CommitMessages(ctx, m)
+		if !c.publishDLQWithRetry(ctx, m, "deserialize: "+err.Error(), "deserialize") {
+			return nil
+		}
+		if err := c.reader.CommitMessages(ctx, m); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("kafka: commit: %w", err)
+		}
 		return nil
 	}
 
@@ -194,7 +206,9 @@ func (c *Consumer[T]) processMessage(ctx context.Context, m kafka.Message) error
 		}
 	}
 	if lastErr != nil {
-		_ = c.bus.publishDLQ(ctx, c.opts, m.Topic, m.Partition, m.Offset, lastErr.Error(), m.Value)
+		if !c.publishDLQWithRetry(ctx, m, lastErr.Error(), "handler") {
+			return nil
+		}
 	}
 	if err := c.reader.CommitMessages(ctx, m); err != nil {
 		if ctx.Err() != nil {
@@ -203,6 +217,31 @@ func (c *Consumer[T]) processMessage(ctx context.Context, m kafka.Message) error
 		return fmt.Errorf("kafka: commit: %w", err)
 	}
 	return nil
+}
+
+// publishDLQWithRetry keeps the source offset uncommitted until DLQ delivery
+// succeeds. A shutdown aborts the retry without committing, allowing Kafka to
+// redeliver the source message.
+func (c *Consumer[T]) publishDLQWithRetry(ctx context.Context, m kafka.Message, reason, errorType string) bool {
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+		if err := c.bus.publishDLQ(ctx, c.opts, m, reason, errorType, attempt); err == nil {
+			return true
+		} else {
+			slog.Error("kafka: failed to publish message to DLQ; retrying",
+				slog.String("topic", m.Topic),
+				slog.String("group", c.group),
+				slog.Int("partition", m.Partition),
+				slog.Int64("offset", m.Offset),
+				slog.Int("attempt", attempt),
+				slog.Any("error", err))
+		}
+		if !c.sleepThroughShutdown(ctx, fetchBackoff(attempt-1)) {
+			return false
+		}
+	}
 }
 
 // sleepThroughShutdown sleeps for d; false means the run context ended while

@@ -9,6 +9,10 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+type messageWriter interface {
+	WriteMessages(context.Context, ...kafka.Message) error
+}
+
 // backoff returns the delay for attempt i (0-based): base * 2^i plus jitter.
 func backoff(base time.Duration, attempt int) time.Duration {
 	d := base
@@ -63,33 +67,39 @@ func dlqTopic(source string) string {
 	return source + ".dlq"
 }
 
-// publishDLQ sends a payload to the dead-letter topic with the standard Hellnet
-// headers describing the original failure. The ctx is library-supplied — the
-// consumer's internal run context derived from the context captured at
-// NewConsumer — and each write is bounded by opts.TimeoutProduce.
-func (b *Bus) publishDLQ(ctx context.Context, opts Options, originalTopic string, partition int, offset int64, reason string, payload []byte) error {
+// publishDLQ sends a message to the dead-letter topic with the standard Hellnet
+// headers describing the original failure. It intentionally bypasses the
+// normal produce circuit breaker: DLQ delivery must remain possible when the
+// normal producer breaker is open.
+func (b *Bus) publishDLQ(ctx context.Context, opts Options, original kafka.Message, reason, errorType string, attempts int) error {
 	topic := opts.DeadLetterTopic
 	if topic == "" {
-		topic = dlqTopic(originalTopic)
+		topic = dlqTopic(original.Topic)
+	}
+	if attempts < 1 {
+		attempts = 1
 	}
 	km := kafka.Message{
 		Topic: topic,
-		Value: payload,
-		Headers: []kafka.Header{
-			{Key: "dlq.reason", Value: []byte(reason)},
-			{Key: "dlq.original.topic", Value: []byte(originalTopic)},
-			{Key: "dlq.original.partition", Value: []byte(fmt.Sprintf("%d", partition))},
-			{Key: "dlq.original.offset", Value: []byte(fmt.Sprintf("%d", offset))},
-		},
+		Key:   append([]byte(nil), original.Key...),
+		Value: append([]byte(nil), original.Value...),
+		Headers: append(append([]kafka.Header(nil), original.Headers...),
+			kafka.Header{Key: "dlq.attempts", Value: []byte(fmt.Sprintf("%d", attempts))},
+			kafka.Header{Key: "dlq.timestamp", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
+			kafka.Header{Key: "dlq.error.type", Value: []byte(errorType)},
+			kafka.Header{Key: "dlq.reason", Value: []byte(reason)},
+			kafka.Header{Key: "dlq.original.topic", Value: []byte(original.Topic)},
+			kafka.Header{Key: "dlq.original.partition", Value: []byte(fmt.Sprintf("%d", original.Partition))},
+			kafka.Header{Key: "dlq.original.offset", Value: []byte(fmt.Sprintf("%d", original.Offset))},
+		),
 	}
-	_, err := b.breaker.Execute(func() (any, error) {
-		wctx, cancel := context.WithTimeout(ctx, opts.TimeoutProduce)
-		defer cancel()
-		if err := b.writer.WriteMessages(wctx, km); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	})
+	writer := b.dlqWriter
+	if writer == nil {
+		writer = b.writer
+	}
+	wctx, cancel := context.WithTimeout(ctx, opts.TimeoutProduce)
+	defer cancel()
+	err := writer.WriteMessages(wctx, km)
 	if err != nil {
 		return fmt.Errorf("kafka: dlq %s: %w", topic, err)
 	}
