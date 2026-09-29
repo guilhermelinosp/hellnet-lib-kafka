@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // Integration tests run against a REAL broker (Redpanda/Kafka).
@@ -50,19 +52,21 @@ func integrationBaseOpts(brokers []string) Options {
 
 func ensureIntegrationTopic(t *testing.T, brokers []string, topic string) {
 	t.Helper()
-	conn, err := kafka.Dial("tcp", brokers[0])
+	opts, err := franzOptions(integrationBaseOpts(brokers))
 	if err != nil {
-		t.Fatalf("dial kafka: %v", err)
+		t.Fatalf("franz options: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
-
-	err = conn.CreateTopics(kafka.TopicConfig{
-		Topic:             topic,
-		NumPartitions:     1,
-		ReplicationFactor: 1,
-	})
-	if err != nil && !errors.Is(err, kafka.TopicAlreadyExists) {
+	client, err := kgo.NewClient(opts...)
+	if err != nil {
+		t.Fatalf("create franz client: %v", err)
+	}
+	defer client.Close()
+	responses, err := kadm.NewClient(client).CreateTopics(context.Background(), 1, 1, nil, topic)
+	if err != nil {
 		t.Fatalf("create topic %q: %v", topic, err)
+	}
+	if topicErr := responses[topic].Err; topicErr != nil && !errors.Is(topicErr, kerr.TopicAlreadyExists) {
+		t.Fatalf("create topic %q: %v", topic, topicErr)
 	}
 }
 
@@ -96,17 +100,7 @@ func newConsumerWithOptions[T Message](ctx context.Context, h Handler[T], spec H
 	if err != nil {
 		return nil, err
 	}
-	return newConsumerWithBus(h, spec, bus)
-}
-
-func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*Consumer[T], error) {
-	if h == nil {
-		return nil, fmt.Errorf("kafka: handler is nil")
-	}
-	if bus == nil {
-		return nil, fmt.Errorf("kafka: bus is nil")
-	}
-	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- test helper closes the consumer.
+	runCtx, cancelRun := context.WithCancel(bus.baseCtx)
 	c := &Consumer[T]{opts: bus.opts, bus: bus, serializer: bus.serializer, runCtx: runCtx, cancelRun: cancelRun}
 	if err := c.Configure(h, spec); err != nil {
 		cancelRun()
@@ -252,21 +246,36 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	}
 
 dlq:
-	dlqReader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:     brokers,
-		GroupID:     fmt.Sprintf("grp-dlq-reader-%d", base),
-		Topic:       topic + ".dlq",
-		MinBytes:    1,
-		MaxBytes:    10e6,
-		MaxWait:     500 * time.Millisecond,
-		StartOffset: kafka.FirstOffset,
-	})
-	defer func() { _ = dlqReader.Close() }()
-	readCtx, cancelRead := context.WithTimeout(ctx, 10*time.Second)
-	dlqMessage, err := dlqReader.FetchMessage(readCtx)
-	cancelRead()
+	dlqOpts, err := franzOptions(integrationBaseOpts(brokers))
 	if err != nil {
+		t.Fatalf("DLQ client options: %v", err)
+	}
+	dlqOpts = append(dlqOpts,
+		kgo.ConsumerGroup(fmt.Sprintf("grp-dlq-reader-%d", base)),
+		kgo.ConsumeTopics(topic+".dlq"),
+		kgo.DisableAutoCommit(),
+		kgo.FetchMinBytes(1),
+		kgo.FetchMaxWait(500*time.Millisecond),
+	)
+	dlqReader, err := kgo.NewClient(dlqOpts...)
+	if err != nil {
+		t.Fatalf("create DLQ client: %v", err)
+	}
+	defer dlqReader.Close()
+	readCtx, cancelRead := context.WithTimeout(ctx, 10*time.Second)
+	dlqFetches := dlqReader.PollFetches(readCtx)
+	cancelRead()
+	if err := dlqFetches.Err(); err != nil {
 		t.Fatalf("read DLQ message: %v", err)
+	}
+	var dlqMessage *kgo.Record
+	dlqFetches.EachRecord(func(record *kgo.Record) {
+		if dlqMessage == nil {
+			dlqMessage = record
+		}
+	})
+	if dlqMessage == nil {
+		t.Fatal("DLQ returned no message")
 	}
 	if !bytes.Contains(dlqMessage.Value, []byte("poison-1")) {
 		t.Fatalf("DLQ value = %q, want poison message", dlqMessage.Value)

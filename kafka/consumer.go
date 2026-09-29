@@ -9,37 +9,29 @@ import (
 	"time"
 
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-type messageReader interface {
-	FetchMessage(context.Context) (kafka.Message, error)
-	CommitMessages(context.Context, ...kafka.Message) error
-	Close() error
+type consumerClient interface {
+	PollFetches(context.Context) kgo.Fetches
+	CommitRecords(context.Context, ...*kgo.Record) error
+	Close()
 }
 
-// Consumer runs a Handler[T] against a topic derived from T's MessageType
-// (or overridden by HandlerSpec). Failed handlers are retried with exponential
-// backoff and, once exhausted, the message goes to the Dead Letter Queue.
-//
-// NewConsumer uses an internal context. RunContext can add a per-run
-// cancellation boundary, and Close always cancels consumption cooperatively.
+// Consumer runs a Handler[T] against a topic derived from T's MessageType.
+// franz-go supplies cooperative-sticky consumer groups and manual commits.
 type Consumer[T Message] struct {
 	opts       Options
 	handler    Handler[T]
 	spec       HandlerSpec
-	reader     messageReader
+	client     consumerClient
 	bus        *Bus
 	serializer Serializer
 	topic      string
 	group      string
 	maxRetries int
-
-	// runCtx is derived once from the constructor context; cancelRun
-	// (wired into Close) cancels it so FetchMessage, retry backoffs and DLQ
-	// writes stop promptly on shutdown.
-	runCtx    context.Context
-	cancelRun context.CancelFunc
+	runCtx     context.Context
+	cancelRun  context.CancelFunc
 }
 
 // NewConsumer creates a consumer with the caller's context and telemetry.
@@ -49,7 +41,7 @@ func NewConsumer[T Message](ctx context.Context, ops telemetry.Client) (*Consume
 	if err != nil {
 		return nil, err
 	}
-	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- stored and called by Close.
+	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- cancelRun is stored and invoked by Close.
 	return &Consumer[T]{
 		opts:       bus.opts,
 		bus:        bus,
@@ -60,12 +52,11 @@ func NewConsumer[T Message](ctx context.Context, ops telemetry.Client) (*Consume
 }
 
 // Configure attaches the handler and resolves the topic and consumer group.
-// It must be called once before Run.
 func (c *Consumer[T]) Configure(h Handler[T], spec ...HandlerSpec) error {
 	if h == nil {
 		return fmt.Errorf("kafka: handler is nil")
 	}
-	if c.reader != nil {
+	if c.client != nil {
 		return fmt.Errorf("kafka: consumer already configured")
 	}
 	s := HandlerSpec{}
@@ -81,6 +72,22 @@ func (c *Consumer[T]) Configure(h Handler[T], spec ...HandlerSpec) error {
 	}
 	var zero T
 	topic := s.resolveTopic(c.opts, zero.MessageType())
+	clientOpts, err := franzOptions(c.opts)
+	if err != nil {
+		return err
+	}
+	clientOpts = append(clientOpts,
+		kgo.ConsumerGroup(group),
+		kgo.ConsumeTopics(topic),
+		kgo.Opt(kgo.Balancers(kgo.CooperativeStickyBalancer())),
+		kgo.DisableAutoCommit(),
+		kgo.FetchMinBytes(1),
+		kgo.FetchMaxWait(500*time.Millisecond),
+	)
+	client, err := kgo.NewClient(clientOpts...)
+	if err != nil {
+		return fmt.Errorf("kafka: create franz consumer: %w", err)
+	}
 	c.handler = h
 	c.spec = s
 	c.topic = topic
@@ -89,42 +96,22 @@ func (c *Consumer[T]) Configure(h Handler[T], spec ...HandlerSpec) error {
 	if s.MaxRetries > 0 {
 		c.maxRetries = s.MaxRetries
 	}
-	c.reader = kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        c.opts.Brokers,
-		GroupID:        group,
-		Topic:          topic,
-		MinBytes:       1,
-		MaxBytes:       10e6,
-		MaxWait:        500 * time.Millisecond,
-		CommitInterval: time.Second,
-		StartOffset:    kafka.FirstOffset,
-		Dialer:         newDialer(c.opts),
-	})
+	c.client = client
 	return nil
 }
 
-// Run consumes messages until the internal run context is cancelled by Close
-// (or by its internal context), an unrecoverable error occurs, or
-// the reader fails. It commits offsets after each successful or DLQ'd batch.
-//
-// Shutdown contract: cancellation/shutdown paths always return nil — context
-// cancellation during FetchMessage, during a backoff sleep, or a commit that
-// races shutdown. Errors observed while still running (e.g. a real broker
-// commit failure) are returned as errors.
-//
-// The run context is supplied by the library. Use RunContext when a caller
-// needs a bounded run while using the zero-config constructor.
+// Run consumes until cancellation or an unrecoverable error. Offsets commit
+// only after successful handling or confirmed DLQ delivery.
 func (c *Consumer[T]) Run() error {
-	if c.reader == nil {
+	if c.client == nil {
 		return fmt.Errorf("kafka: consumer is not configured; call Configure first")
 	}
 	return c.run(c.runCtx)
 }
 
-// RunContext consumes until ctx, Close, or the constructor context is
-// cancelled. It is useful with the zero-config NewConsumer constructor.
+// RunContext consumes with an additional caller-owned cancellation boundary.
 func (c *Consumer[T]) RunContext(ctx context.Context) error {
-	if c.reader == nil {
+	if c.client == nil {
 		return fmt.Errorf("kafka: consumer is not configured; call Configure first")
 	}
 	if ctx == nil {
@@ -140,44 +127,44 @@ func (c *Consumer[T]) RunContext(ctx context.Context) error {
 }
 
 func (c *Consumer[T]) run(ctx context.Context) error {
-	var fetchFails int // consecutive transient fetch failures for backoff
+	var fetchFails int
 	for {
-		m, err := c.reader.FetchMessage(ctx)
-		if err == nil {
-			fetchFails = 0 // healthy fetch: reset the escalating backoff
-			if perr := c.processMessage(ctx, m); perr != nil {
-				return perr
+		fetches := c.client.PollFetches(ctx)
+		if err := fetches.Err(); err != nil {
+			if isCtxErr(err) || fetches.IsClientClosed() {
+				return nil
+			}
+			fetchFails++
+			slog.Warn("kafka: transient fetch error; retrying",
+				slog.String("topic", c.topic),
+				slog.String("group", c.group),
+				slog.Int("consecutive_failures", fetchFails),
+				slog.Any("error", err))
+			if !c.sleepThroughShutdown(ctx, fetchBackoff(fetchFails-1)) {
+				return nil
 			}
 			continue
 		}
-		if isCtxErr(err) {
-			return nil
+		if fetches.Empty() {
+			continue
 		}
-		// Transient fetch errors (rebalance, leader changes, network): log,
-		// escalate the capped backoff and keep consuming instead of dying
-		// silently.
-		fetchFails++
-		slog.Warn("kafka: transient fetch error; retrying",
-			slog.String("topic", c.topic),
-			slog.String("group", c.group),
-			slog.Int("consecutive_failures", fetchFails),
-			slog.Any("error", err))
-		if !c.sleepThroughShutdown(ctx, fetchBackoff(fetchFails-1)) {
-			return nil // shutdown during backoff
+		fetchFails = 0
+		var processErr error
+		fetches.EachRecord(func(record *kgo.Record) {
+			if processErr == nil {
+				processErr = c.processMessage(ctx, *record)
+			}
+		})
+		if processErr != nil {
+			return processErr
 		}
 	}
 }
 
-// processMessage deserializes one fetched message, runs the handler with
-// retries (exponential backoff), lands it in the DLQ when retries are
-// exhausted, and commits the offset. The returned error is fatal to Run.
-func (c *Consumer[T]) processMessage(ctx context.Context, m kafka.Message) error {
+func (c *Consumer[T]) processMessage(ctx context.Context, m kgo.Record) error {
 	ctx = extractTrace(ctx, m)
 	var msg T
 	out := any(&msg)
-	// For pointer message types (the natural Go/protobuf style), allocate
-	// and pass the pointer itself — serializers expect the message, not a
-	// **T. Value types keep the addressable &msg.
 	if t := reflect.TypeOf(msg); t != nil && t.Kind() == reflect.Pointer {
 		msg = reflect.New(t.Elem()).Interface().(T)
 		out = any(msg)
@@ -186,45 +173,38 @@ func (c *Consumer[T]) processMessage(ctx context.Context, m kafka.Message) error
 		if !c.publishDLQWithRetry(ctx, m, "deserialize: "+err.Error(), "deserialize") {
 			return nil
 		}
-		if err := c.reader.CommitMessages(ctx, m); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("kafka: commit: %w", err)
-		}
-		return nil
+		return c.commit(ctx, m)
 	}
 
 	var lastErr error
 	for attempt := 0; attempt < c.maxRetries; attempt++ {
 		if attempt > 0 && !c.sleepThroughShutdown(ctx, backoff(c.opts.RetryDelay, attempt-1)) {
-			return nil // shutdown during handler-retry backoff
+			return nil
 		}
 		lastErr = c.handle(ctx, msg, m)
 		if lastErr == nil {
 			break
 		}
 	}
-	if lastErr != nil {
-		if !c.publishDLQWithRetry(ctx, m, lastErr.Error(), "handler") {
-			return nil
-		}
+	if lastErr != nil && !c.publishDLQWithRetry(ctx, m, lastErr.Error(), "handler") {
+		return nil
 	}
-	if err := c.reader.CommitMessages(ctx, m); err != nil {
+	return c.commit(ctx, m)
+}
+
+func (c *Consumer[T]) commit(ctx context.Context, m kgo.Record) error {
+	if err := c.client.CommitRecords(ctx, &m); err != nil {
 		if ctx.Err() != nil {
-			return nil // commit raced shutdown: cooperative stop, not an error
+			return nil
 		}
 		return fmt.Errorf("kafka: commit: %w", err)
 	}
 	return nil
 }
 
-// publishDLQWithRetry keeps the source offset uncommitted until DLQ delivery
-// succeeds. A shutdown aborts the retry without committing, allowing Kafka to
-// redeliver the source message.
-func (c *Consumer[T]) publishDLQWithRetry(ctx context.Context, m kafka.Message, reason, errorType string) bool {
+func (c *Consumer[T]) publishDLQWithRetry(ctx context.Context, m kgo.Record, reason, errorType string) bool {
 	for attempt := 1; ; attempt++ {
-		if err := ctx.Err(); err != nil {
+		if ctx.Err() != nil {
 			return false
 		}
 		if err := c.bus.publishDLQ(ctx, c.opts, m, reason, errorType, attempt); err == nil {
@@ -233,7 +213,7 @@ func (c *Consumer[T]) publishDLQWithRetry(ctx context.Context, m kafka.Message, 
 			slog.Error("kafka: failed to publish message to DLQ; retrying",
 				slog.String("topic", m.Topic),
 				slog.String("group", c.group),
-				slog.Int("partition", m.Partition),
+				slog.Int("partition", int(m.Partition)),
 				slog.Int64("offset", m.Offset),
 				slog.Int("attempt", attempt),
 				slog.Any("error", err))
@@ -244,13 +224,11 @@ func (c *Consumer[T]) publishDLQWithRetry(ctx context.Context, m kafka.Message, 
 	}
 }
 
-// sleepThroughShutdown sleeps for d; false means the run context ended while
-// sleeping — the caller must treat it as cooperative shutdown.
-func (c *Consumer[T]) handle(ctx context.Context, msg T, m kafka.Message) error {
+func (c *Consumer[T]) handle(ctx context.Context, msg T, m kgo.Record) error {
 	fn := func(ctx context.Context) error {
 		return c.handler.Handle(ctx, msg, Ctx{
 			Topic:     m.Topic,
-			Partition: m.Partition,
+			Partition: int(m.Partition),
 			Offset:    m.Offset,
 			Key:       m.Key,
 		})
@@ -267,23 +245,15 @@ func (c *Consumer[T]) sleepThroughShutdown(ctx context.Context, d time.Duration)
 	return sleepCtx(ctx, d) == nil
 }
 
-// isCtxErr reports whether err signals context cancellation/deadline.
 func isCtxErr(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// Close cancels the internal run context first — so FetchMessage, retry
-// backoffs and DLQ writes abort promptly instead of blocking until the next
-// broker round-trip — and then releases the reader and the DLQ bus.
+// Close cancels consumption and releases the franz-go clients.
 func (c *Consumer[T]) Close() error {
 	c.cancelRun()
-	if c.reader == nil {
-		return c.bus.Close()
+	if c.client != nil {
+		c.client.Close()
 	}
-	cerr := c.reader.Close()
-	berr := c.bus.Close()
-	if cerr != nil {
-		return cerr
-	}
-	return berr
+	return c.bus.Close()
 }

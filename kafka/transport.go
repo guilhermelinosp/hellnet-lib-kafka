@@ -8,65 +8,68 @@ import (
 	"strings"
 	"time"
 
-	"github.com/segmentio/kafka-go"
-	"github.com/segmentio/kafka-go/sasl"
-	"github.com/segmentio/kafka-go/sasl/plain"
-	"github.com/segmentio/kafka-go/sasl/scram"
+	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/sasl"
+	"github.com/twmb/franz-go/pkg/sasl/plain"
+	"github.com/twmb/franz-go/pkg/sasl/scram"
 )
 
-// newDialer returns a kafka-go Dialer for the configured security protocol,
-// or nil for plaintext (the default local-dev path).
-func newDialer(o Options) *kafka.Dialer {
-	if o.SecurityProtocol == "" || o.SecurityProtocol == "plaintext" {
-		return nil
+func franzOptions(o Options) ([]kgo.Opt, error) {
+	opts := []kgo.Opt{
+		kgo.SeedBrokers(o.Brokers...),
+		kgo.DialTimeout(10 * time.Second),
+		kgo.RequiredAcks(kgo.AllISRAcks()),
+		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)),
+		kgo.AllowAutoTopicCreation(),
+		kgo.RecordDeliveryTimeout(o.TimeoutProduce),
 	}
-	d := &kafka.Dialer{Timeout: 10 * time.Second}
-
+	if !o.Idempotent {
+		opts = append(opts, kgo.DisableIdempotentWrite())
+	}
 	if o.SecurityProtocol == "ssl" || o.SecurityProtocol == "sasl_ssl" {
 		tlsCfg, err := buildTLS(o)
-		if err == nil {
-			d.TLS = tlsCfg
+		if err != nil {
+			return nil, err
 		}
+		opts = append(opts, kgo.DialTLSConfig(tlsCfg))
 	}
 	if o.SecurityProtocol == "sasl_plaintext" || o.SecurityProtocol == "sasl_ssl" {
-		if m, err := buildSASL(o); err == nil {
-			d.SASLMechanism = m
+		mechanism, err := buildSASL(o)
+		if err != nil {
+			return nil, err
 		}
+		opts = append(opts, kgo.SASL(mechanism))
 	}
-	return d
+	return opts, nil
 }
 
-// buildTLS builds a tls.Config from KAFKA_SSL_* options.
 func buildTLS(o Options) (*tls.Config, error) {
 	// #nosec G402 -- SSLInsecureSkipVerify is an explicit operator opt-in option.
-	cfg := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: o.SSLInsecureSkipVerify,
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: o.SSLInsecureSkipVerify}
+	if o.SSLCA == "" {
+		return cfg, nil
 	}
-	if o.SSLCA != "" {
-		pem, err := os.ReadFile(o.SSLCA)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: read CA: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("kafka: invalid CA in %s", o.SSLCA)
-		}
-		cfg.RootCAs = pool
+	pem, err := os.ReadFile(o.SSLCA)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: read CA: %w", err)
 	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("kafka: invalid CA in %s", o.SSLCA)
+	}
+	cfg.RootCAs = pool
 	return cfg, nil
 }
 
-// buildSASL maps KAFKA_SASL_* to a kafka-go mechanism.
 func buildSASL(o Options) (sasl.Mechanism, error) {
 	user, pass := o.SASLUsername, o.SASLPassword
 	switch strings.ToUpper(o.SASLMechanism) {
 	case "PLAIN":
-		return plain.Mechanism{Username: user, Password: pass}, nil
+		return plain.Auth{User: user, Pass: pass}.AsMechanism(), nil
 	case "SCRAM-SHA-256":
-		return scram.Mechanism(scram.SHA256, user, pass)
+		return scram.Auth{User: user, Pass: pass}.AsSha256Mechanism(), nil
 	case "", "SCRAM-SHA-512":
-		return scram.Mechanism(scram.SHA512, user, pass)
+		return scram.Auth{User: user, Pass: pass}.AsSha512Mechanism(), nil
 	default:
 		return nil, fmt.Errorf("kafka: unsupported SASL mechanism %q", o.SASLMechanism)
 	}

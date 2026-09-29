@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -19,28 +19,30 @@ type failingMessageWriter struct {
 	cancel context.CancelFunc
 }
 
-func (w *failingMessageWriter) WriteMessages(context.Context, ...kafka.Message) error {
+func (w *failingMessageWriter) ProduceSync(context.Context, ...*kgo.Record) kgo.ProduceResults {
 	w.calls++
 	if w.cancel != nil {
 		w.cancel()
 	}
-	return errors.New("broker unavailable")
+	return kgo.ProduceResults{{Err: errors.New("broker unavailable")}}
 }
+
+func (w *failingMessageWriter) Close() {}
 
 type commitTrackingReader struct {
 	commits int
 }
 
-func (r *commitTrackingReader) FetchMessage(context.Context) (kafka.Message, error) {
-	return kafka.Message{}, context.Canceled
+func (r *commitTrackingReader) PollFetches(context.Context) kgo.Fetches {
+	return nil
 }
 
-func (r *commitTrackingReader) CommitMessages(context.Context, ...kafka.Message) error {
+func (r *commitTrackingReader) CommitRecords(context.Context, ...*kgo.Record) error {
 	r.commits++
 	return nil
 }
 
-func (r *commitTrackingReader) Close() error { return nil }
+func (r *commitTrackingReader) Close() {}
 
 type failingSerializer struct{}
 
@@ -108,7 +110,7 @@ func TestTraceContextRoundTripThroughHeaders(t *testing.T) {
 		TraceFlags: trace.FlagsSampled,
 	})
 	ctx := trace.ContextWithSpanContext(context.Background(), sc)
-	message := kafka.Message{}
+	message := kgo.Record{}
 
 	injectTrace(ctx, &message)
 	got := trace.SpanContextFromContext(extractTrace(context.Background(), message))
@@ -222,12 +224,12 @@ func TestDLQFailureDoesNotCommitOffset(t *testing.T) {
 	consumer := &Consumer[orderCreated]{
 		opts:       bus.opts,
 		bus:        bus,
-		reader:     reader,
+		client:     reader,
 		serializer: failingSerializer{},
 		group:      "orders",
 	}
 
-	err := consumer.processMessage(ctx, kafka.Message{
+	err := consumer.processMessage(ctx, kgo.Record{
 		Topic:     "orders",
 		Partition: 2,
 		Offset:    17,
@@ -247,13 +249,13 @@ func TestDLQFailureDoesNotCommitOffset(t *testing.T) {
 func TestPublishDLQPreservesMessageMetadata(t *testing.T) {
 	writer := &capturingMessageWriter{}
 	bus := &Bus{dlqWriter: writer}
-	original := kafka.Message{
+	original := kgo.Record{
 		Topic:     "orders",
 		Partition: 2,
 		Offset:    17,
 		Key:       []byte("order-17"),
 		Value:     []byte("payload"),
-		Headers:   []kafka.Header{{Key: "traceparent", Value: []byte("00-trace")}},
+		Headers:   []kgo.RecordHeader{{Key: "traceparent", Value: []byte("00-trace")}},
 	}
 
 	if err := bus.publishDLQ(context.Background(), Options{TimeoutProduce: time.Second}, original, "handler failed", "handler", 3); err != nil {
@@ -274,15 +276,17 @@ func TestPublishDLQPreservesMessageMetadata(t *testing.T) {
 }
 
 type capturingMessageWriter struct {
-	messages []kafka.Message
+	messages []*kgo.Record
 }
 
-func (w *capturingMessageWriter) WriteMessages(_ context.Context, messages ...kafka.Message) error {
+func (w *capturingMessageWriter) ProduceSync(_ context.Context, messages ...*kgo.Record) kgo.ProduceResults {
 	w.messages = append(w.messages, messages...)
 	return nil
 }
 
-func hasHeader(headers []kafka.Header, key string) bool {
+func (w *capturingMessageWriter) Close() {}
+
+func hasHeader(headers []kgo.RecordHeader, key string) bool {
 	for _, header := range headers {
 		if header.Key == key {
 			return true
