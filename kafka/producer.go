@@ -40,3 +40,11 @@ func (p *Producer[T]) Close() error {
 	p.bus = nil
 	return err
 }
+
+// Ping checks if the Kafka broker is reachable.
+func (p *Producer[T]) Ping(ctx context.Context) error {
+	if p.bus == nil {
+		return fmt.Errorf("kafka: producer already closed")
+	}
+	return p.bus.Ping(ctx)
+}
