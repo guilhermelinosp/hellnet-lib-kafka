@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/segmentio/kafka-go"
 )
 
 // Integration tests run against a REAL broker (Redpanda/Kafka).
@@ -40,8 +42,27 @@ func (evtTest) MessageType() string { return "it.test.v1" }
 func integrationBaseOpts(brokers []string) Options {
 	o := testDefaultOptions()
 	o.Brokers = brokers
+	o.TopicPrefix = "hellnet"
 	o.SecurityProtocol = "plaintext"
 	return o
+}
+
+func ensureIntegrationTopic(t *testing.T, brokers []string, topic string) {
+	t.Helper()
+	conn, err := kafka.Dial("tcp", brokers[0])
+	if err != nil {
+		t.Fatalf("dial kafka: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	err = conn.CreateTopics(kafka.TopicConfig{
+		Topic:             topic,
+		NumPartitions:     1,
+		ReplicationFactor: 1,
+	})
+	if err != nil && !errors.Is(err, kafka.TopicAlreadyExists) {
+		t.Fatalf("create topic %q: %v", topic, err)
+	}
 }
 
 func newProducerWithOptions[T Message](ctx context.Context, o Options) (*Producer[T], error) {
@@ -100,7 +121,8 @@ func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*C
 func TestIntegrationPublishConsume(t *testing.T) {
 	brokers := integrationBrokers(t)
 	ctx := context.Background()
-	topic := "hellnet.it.test.v1" // pré-existente: auto-create in-flight perde batches
+	topic := "hellnet.it.test.v1"
+	ensureIntegrationTopic(t, brokers, topic)
 
 	prod, err := newProducerWithOptions[evtTest](ctx, integrationBaseOpts(brokers))
 	if err != nil {
@@ -176,6 +198,7 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now().UnixNano()
 	topic := "hellnet.it.test.v1"
+	ensureIntegrationTopic(t, brokers, topic)
 
 	boom := errors.New("always fails")
 	var attempts atomic.Int32
@@ -229,6 +252,7 @@ func TestIntegrationCloseCancelsRun(t *testing.T) {
 	brokers := integrationBrokers(t)
 	ctx := context.Background()
 	topic := "hellnet.it.test.v1"
+	ensureIntegrationTopic(t, brokers, topic)
 
 	h := HandlerFunc[evtTest](func(ctx context.Context, msg evtTest, mc Ctx) error { return nil })
 	spec := HandlerSpec{Topic: topic, Group: fmt.Sprintf("grp-stop-%d", time.Now().UnixNano())}
