@@ -108,8 +108,9 @@ func (o *Options) validate() error {
 	return nil
 }
 
-// buildSerializer selects the serializer per DefaultSerializer ("json" or
-// "avro"). Avro requires a Schema Registry URL (hellnet-lib-schema). The ctx
+// buildSerializer selects the serializer per DefaultSerializer ("json", "avro"
+// or "protobuf"). Avro and Protobuf require a Schema Registry URL
+// (hellnet-lib-schema). The ctx
 // becomes the registry client's base context: schema fetches derive their
 // timeout budget from it, so cancelling the ctx captured at construction also
 // aborts in-flight registry lookups.
