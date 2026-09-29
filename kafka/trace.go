@@ -3,7 +3,7 @@ package kafka
 import (
 	"context"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 )
@@ -11,19 +11,19 @@ import (
 // injectTrace carries the W3C trace context through Kafka headers. Kafka is
 // an asynchronous boundary, so the consumer cannot inherit Go's context
 // directly.
-func injectTrace(ctx context.Context, message *kafka.Message) {
+func injectTrace(ctx context.Context, message *kgo.Record) {
 	carrier := propagation.HeaderCarrier{}
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
 	for key, values := range carrier {
 		for _, value := range values {
-			message.Headers = append(message.Headers, kafka.Header{Key: key, Value: []byte(value)})
+			message.Headers = append(message.Headers, kgo.RecordHeader{Key: key, Value: []byte(value)})
 		}
 	}
 }
 
 // extractTrace restores the producer's W3C trace context before the consumer
 // handler creates its spans.
-func extractTrace(ctx context.Context, message kafka.Message) context.Context {
+func extractTrace(ctx context.Context, message kgo.Record) context.Context {
 	carrier := propagation.HeaderCarrier{}
 	for _, header := range message.Headers {
 		carrier[header.Key] = append(carrier[header.Key], string(header.Value))

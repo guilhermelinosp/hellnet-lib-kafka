@@ -3,50 +3,42 @@ package kafka
 import (
 	"context"
 	"fmt"
-	"net"
-	"time"
 
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
-	"github.com/segmentio/kafka-go"
 	"github.com/sony/gobreaker"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-// Bus is the message bus: an idempotent producer with retry and a circuit
-// breaker, plus DLQ publishing. New/MustNew use an internal background context.
+type recordProducer interface {
+	ProduceSync(context.Context, ...*kgo.Record) kgo.ProduceResults
+	Close()
+}
+
+// Bus is the message bus: an idempotent franz-go producer with a circuit
+// breaker, plus DLQ publishing. New/MustNew use the constructor context.
 type Bus struct {
 	opts       Options
-	writer     *kafka.Writer
+	client     *kgo.Client
+	dlqWriter  recordProducer
 	breaker    *gobreaker.CircuitBreaker
 	serializer Serializer
-	baseCtx    context.Context // constructor context; parent of every operation
+	baseCtx    context.Context
 	ops        telemetry.Client
 }
 
-// newBus builds a Bus from validated options. ctx becomes the base context:
-// every operation derives its own per-attempt contexts (produce timeouts,
-// cancellation) from it instead of taking a caller-supplied parameter.
 func newBus(ctx context.Context, opts Options) (*Bus, error) {
-	w := &kafka.Writer{
-		Addr:                   kafka.TCP(opts.Brokers...),
-		Balancer:               &kafka.LeastBytes{},
-		RequiredAcks:           kafka.RequireAll,
-		Async:                  false,
-		MaxAttempts:            3,    // transient errors (e.g. leader election) retried
-		AllowAutoTopicCreation: true, // brokers with auto_create_topics (e.g. Redpanda)
+	clientOpts, err := franzOptions(opts)
+	if err != nil {
+		return nil, err
 	}
-	if d := newDialer(opts); d != nil {
-		dial := d.DialContext
-		w.Transport = &kafka.Transport{
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				return dial(ctx, network, address)
-			},
-			SASL: d.SASLMechanism,
-			TLS:  d.TLS,
-		}
+	client, err := kgo.NewClient(clientOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: create franz client: %w", err)
 	}
 	b := &Bus{
 		opts:       opts,
-		writer:     w,
+		client:     client,
+		dlqWriter:  client,
 		serializer: opts.Serializer,
 		baseCtx:    ctx,
 	}
@@ -62,14 +54,7 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 	return b, nil
 }
 
-// Publish serializes msg and produces it to "{prefix}.{messageType}". Produce
-// is protected by TimeoutProduce -> CircuitBreaker (the Go counterpart of the
-// .NET Polly pipeline). On breaker open, it fails fast until it half-opens.
-//
-// The constructor context is captured once and propagated internally: each
-// attempt derives a fresh timeout (TimeoutProduce) from the stored base
-// context. Applications never pass ctx to operations; cancelling the base
-// context stops in-flight produces cooperatively.
+// Publish serializes msg and produces it to "{prefix}.{messageType}".
 func (b *Bus) Publish(msg Message) error {
 	topic := TopicName(b.opts, msg.MessageType())
 	publish := func(ctx context.Context) error {
@@ -77,14 +62,12 @@ func (b *Bus) Publish(msg Message) error {
 		if err != nil {
 			return fmt.Errorf("kafka: serialize %s: %w", topic, err)
 		}
-		km := kafka.Message{Topic: topic, Value: payload}
-		injectTrace(ctx, &km)
-
+		record := &kgo.Record{Topic: topic, Value: payload}
+		injectTrace(ctx, record)
 		_, err = b.breaker.Execute(func() (any, error) {
-			wctx, cancel := context.WithTimeout(b.baseCtx, b.opts.TimeoutProduce)
-			defer cancel()
-			if err := b.writer.WriteMessages(wctx, km); err != nil {
-				return nil, fmt.Errorf("%w", err)
+			results := b.client.ProduceSync(ctx, record)
+			if err := results.FirstErr(); err != nil {
+				return nil, err
 			}
 			return nil, nil
 		})
@@ -93,35 +76,26 @@ func (b *Bus) Publish(msg Message) error {
 		}
 		return nil
 	}
-
 	if b.ops != nil {
-		return b.ops.Trace(b.baseCtx).Span("kafka.publish", func(ctx context.Context) error {
-			return publish(ctx)
-		})
+		return b.ops.Trace(b.baseCtx).Span("kafka.publish", publish)
 	}
 	return publish(b.baseCtx)
 }
 
-// Close releases the underlying writer.
+// Close releases the franz-go producer client.
 func (b *Bus) Close() error {
-	return b.writer.Close()
-}
-
-// Ping checks if the Kafka broker is reachable by attempting to dial.
-func (b *Bus) Ping(ctx context.Context) error {
-	// Try to dial one of the brokers to verify connectivity
-	for _, broker := range b.opts.Brokers {
-		dialer := &net.Dialer{Timeout: 5 * time.Second}
-		conn, err := dialer.DialContext(ctx, "tcp", broker)
-		if err != nil {
-			continue
-		}
-		if err := conn.Close(); err != nil {
-			return fmt.Errorf("kafka: close dial connection: %w", err)
-		}
+	if b.client == nil {
 		return nil
 	}
-	return fmt.Errorf("kafka: no brokers reachable")
+	b.client.Close()
+	return nil
 }
 
-// Option configures the Bus at construction time.
+// Ping opens metadata and authentication paths through franz-go by issuing a
+// harmless metadata request for the configured broker set.
+func (b *Bus) Ping(ctx context.Context) error {
+	if err := b.client.Ping(ctx); err != nil {
+		return fmt.Errorf("kafka: ping metadata/authentication: %w", err)
+	}
+	return nil
+}

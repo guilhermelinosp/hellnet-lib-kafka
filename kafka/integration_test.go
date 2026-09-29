@@ -3,6 +3,7 @@
 package kafka
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,7 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // Integration tests run against a REAL broker (Redpanda/Kafka).
@@ -49,19 +52,21 @@ func integrationBaseOpts(brokers []string) Options {
 
 func ensureIntegrationTopic(t *testing.T, brokers []string, topic string) {
 	t.Helper()
-	conn, err := kafka.Dial("tcp", brokers[0])
+	opts, err := franzOptions(integrationBaseOpts(brokers))
 	if err != nil {
-		t.Fatalf("dial kafka: %v", err)
+		t.Fatalf("franz options: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
-
-	err = conn.CreateTopics(kafka.TopicConfig{
-		Topic:             topic,
-		NumPartitions:     1,
-		ReplicationFactor: 1,
-	})
-	if err != nil && !errors.Is(err, kafka.TopicAlreadyExists) {
+	client, err := kgo.NewClient(opts...)
+	if err != nil {
+		t.Fatalf("create franz client: %v", err)
+	}
+	defer client.Close()
+	responses, err := kadm.NewClient(client).CreateTopics(context.Background(), 1, 1, nil, topic)
+	if err != nil {
 		t.Fatalf("create topic %q: %v", topic, err)
+	}
+	if topicErr := responses[topic].Err; topicErr != nil && !errors.Is(topicErr, kerr.TopicAlreadyExists) {
+		t.Fatalf("create topic %q: %v", topic, topicErr)
 	}
 }
 
@@ -95,17 +100,7 @@ func newConsumerWithOptions[T Message](ctx context.Context, h Handler[T], spec H
 	if err != nil {
 		return nil, err
 	}
-	return newConsumerWithBus(h, spec, bus)
-}
-
-func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*Consumer[T], error) {
-	if h == nil {
-		return nil, fmt.Errorf("kafka: handler is nil")
-	}
-	if bus == nil {
-		return nil, fmt.Errorf("kafka: bus is nil")
-	}
-	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- test helper closes the consumer.
+	runCtx, cancelRun := context.WithCancel(bus.baseCtx)
 	c := &Consumer[T]{opts: bus.opts, bus: bus, serializer: bus.serializer, runCtx: runCtx, cancelRun: cancelRun}
 	if err := c.Configure(h, spec); err != nil {
 		cancelRun()
@@ -197,7 +192,9 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	brokers := integrationBrokers(t)
 	ctx := context.Background()
 	base := time.Now().UnixNano()
-	topic := "hellnet.it.test.v1"
+	o := integrationBaseOpts(brokers)
+	o.TopicPrefix = fmt.Sprintf("hellnet-%d", base)
+	topic := TopicName(o, (evtTest{}).MessageType())
 	ensureIntegrationTopic(t, brokers, topic)
 
 	boom := errors.New("always fails")
@@ -207,7 +204,6 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 		return boom
 	})
 
-	o := integrationBaseOpts(brokers)
 	o.MaxRetries = 2
 	o.RetryDelay = 50 * time.Millisecond
 
@@ -216,7 +212,12 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}
-	defer func() { _ = cons.Close() }()
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = cons.Close()
+		}
+	})
 	go func() { _ = cons.Run() }()
 
 	prod, err := newProducerWithOptions[evtTest](ctx, integrationBaseOpts(brokers))
@@ -240,9 +241,67 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 		case <-ticker.C:
 			if attempts.Load() >= int32(o.MaxRetries)+1 {
 				fmt.Printf("DLQ path confirmed: handler attempted %d times\n", attempts.Load())
-				return
+				goto dlq
 			}
 		}
+	}
+
+dlq:
+	dlqOpts, err := franzOptions(integrationBaseOpts(brokers))
+	if err != nil {
+		t.Fatalf("DLQ client options: %v", err)
+	}
+	dlqOpts = append(dlqOpts,
+		kgo.ConsumerGroup(fmt.Sprintf("grp-dlq-reader-%d", base)),
+		kgo.ConsumeTopics(topic+".dlq"),
+		kgo.DisableAutoCommit(),
+		kgo.FetchMinBytes(1),
+		kgo.FetchMaxWait(500*time.Millisecond),
+	)
+	dlqReader, err := kgo.NewClient(dlqOpts...)
+	if err != nil {
+		t.Fatalf("create DLQ client: %v", err)
+	}
+	defer dlqReader.Close()
+	readCtx, cancelRead := context.WithTimeout(ctx, 10*time.Second)
+	dlqFetches := dlqReader.PollFetches(readCtx)
+	cancelRead()
+	if err := dlqFetches.Err(); err != nil {
+		t.Fatalf("read DLQ message: %v", err)
+	}
+	var dlqMessage *kgo.Record
+	dlqFetches.EachRecord(func(record *kgo.Record) {
+		if dlqMessage == nil {
+			dlqMessage = record
+		}
+	})
+	if dlqMessage == nil {
+		t.Fatal("DLQ returned no message")
+	}
+	if !bytes.Contains(dlqMessage.Value, []byte("poison-1")) {
+		t.Fatalf("DLQ value = %q, want poison message", dlqMessage.Value)
+	}
+	for _, header := range []string{"dlq.attempts", "dlq.timestamp", "dlq.error.type"} {
+		if !hasHeader(dlqMessage.Headers, header) {
+			t.Fatalf("DLQ headers missing %q: %#v", header, dlqMessage.Headers)
+		}
+	}
+
+	if err := cons.Close(); err != nil {
+		t.Fatalf("close source consumer: %v", err)
+	}
+	closed = true
+	consAgain, err := newConsumerWithOptions[evtTest](ctx, h, spec, o)
+	if err != nil {
+		t.Fatalf("reopen source consumer: %v", err)
+	}
+	go func() { _ = consAgain.Run() }()
+	time.Sleep(1 * time.Second)
+	if err := consAgain.Close(); err != nil {
+		t.Fatalf("close reopened source consumer: %v", err)
+	}
+	if got := attempts.Load(); got != int32(o.MaxRetries)+1 {
+		t.Fatalf("handler attempts after committed DLQ = %d, want %d", got, o.MaxRetries+1)
 	}
 }
 

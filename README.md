@@ -71,7 +71,7 @@ As próximas seções mostram o detalhe técnico completo de cada peça.
 | `IMessageContext` | `Ctx{Topic, Partition, Offset, Key}` |
 | `MessageHandlerAttribute` | `HandlerSpec{Topic, Group, MaxRetries}` |
 | `AddHellnetKafka()` (DI) | `kafka.NewProducer[T](ctx, ops)` / `kafka.NewConsumer[T](ctx, ops)` + `Configure` |
-| Confluent.Kafka + Polly | `segmentio/kafka-go` + `sony/gobreaker` |
+| Confluent.Kafka + Polly | `franz-go` + `sony/gobreaker` |
 | `AvroMessageSerializer` | `kafka.AvroSerializer` (wire format Confluent) |
 | `ProtobufMessageSerializer` | `kafka.ProtobufSerializer` (wire format Confluent) |
 | RetryEngine + Dead Letter | retry exp + topic `{topic}.dlq` com headers `dlq.*` |
@@ -81,7 +81,8 @@ As próximas seções mostram o detalhe técnico completo de cada peça.
 - **Tipado por generics** — producer/consumer/handler presos ao tipo da mensagem
 - **Env-first** — toda config via `KAFKA_*` (.env)
 - **3 serializers** — JSON, Avro e Protobuf (Schema Registry, wire format Confluent)
-- **Resiliência** — timeout → retry exponencial → circuit breaker (produce)
+- **Resiliência** — franz-go idempotente + timeout → retry interno → circuit breaker (produce)
+- **Consumer cooperativo** — rebalance `cooperative-sticky` sem parada global
 - **Dead Letter Queue** — handler falhou após `MaxRetries` → `{topic}.dlq` com headers `dlq.*`
 - **`ctx` uma vez na construção** — `New(ctx)`/`NewProducer(ctx)`/`NewConsumer(ctx, ...)` capturam o contexto e propagam internamente; apps **nunca** passam ctx às operações (`Publish`, `Run`, `Close`)
 - **Apicurio e Redpanda** — SR com caminho configurável (`/apis/ccompat/v6` ou raiz)
@@ -122,7 +123,7 @@ func main() {
 	defer stop()
 
 	// Producer tipado pelo tipo da mensagem (env-first; lê KAFKA_* via .env).
-	prod, err := kafka.NewProducer[orderCreated](ctx)
+	prod, err := kafka.NewProducer[orderCreated](ctx, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -132,8 +133,11 @@ func main() {
 	}
 
 	// Consumer tipado pelo handler (env-first; opts opcionais).
-	cons, err := kafka.NewConsumer(ctx, orderHandler{}, kafka.HandlerSpec{})
+	cons, err := kafka.NewConsumer[orderCreated](ctx, nil)
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := cons.Configure(orderHandler{}, kafka.HandlerSpec{}); err != nil {
 		log.Fatal(err)
 	}
 	defer cons.Close()
@@ -156,7 +160,7 @@ Use `HandlerSpec.Topic` para sobrescrever.
 ### Producer[T]
 
 ```go
-prod, _ := kafka.NewProducer[orderCreated](ctx) // env-first; ctx capturado uma vez
+prod, _ := kafka.NewProducer[orderCreated](ctx, nil) // env-first; ctx capturado uma vez
 prod.Publish(msg)                 // usa o ctx capturado (timeout por attempt internamente)
 prod.Close()
 ```
@@ -164,9 +168,10 @@ prod.Close()
 ### Consumer[T]
 
 ```go
-cons, _ := kafka.NewConsumer[T](ctx, handler, HandlerSpec{}, opts ...Options) // env-first; ctx capturado uma vez
-cons.Run()                         // bloqueia até Close()/cancelamento do ctx capturado
-cons.Close()                       // cancela o run ctx interno e libera reader/bus
+cons, _ := kafka.NewConsumer[T](ctx, nil) // env-first; ctx capturado uma vez
+_ = cons.Configure(handler, HandlerSpec{})
+cons.Run()                         // grupo cooperativo; bloqueia até Close()/cancelamento
+cons.Close()                       // cancela o run ctx interno e libera client/bus
 ```
 
 ### Handler[T] e HandlerSpec
@@ -263,8 +268,9 @@ Wire format Confluent idêntico ao Avro.
   mensagem, e o grupo usa `CommitInterval` de 1s. Uma mensagem pode ser
   reprocessada se o consumidor cair entre o processamento e o commit —
   handlers devem ser idempotentes.
-- **Rebalance**: joins/leaves do consumer group, troca de leader e falhas de
-  rede **não derrubam o loop de consumo**. Cada erro transitório de fetch é
+- **Rebalance cooperativo**: franz-go usa `cooperative-sticky` por padrão;
+  joins/leaves do consumer group, troca de leader e falhas de rede **não derrubam
+  o loop de consumo**. Cada erro transitório de fetch é
   logado via `log/slog` (WARN com contagem de falhas consecutivas) e o retry
   usa backoff crescente com teto (base 200ms dobrando até 5s, ±20% jitter);
   o primeiro fetch com sucesso reseta o contador.

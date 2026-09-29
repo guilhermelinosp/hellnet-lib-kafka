@@ -2,16 +2,55 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
+
+type failingMessageWriter struct {
+	calls  int
+	cancel context.CancelFunc
+}
+
+func (w *failingMessageWriter) ProduceSync(context.Context, ...*kgo.Record) kgo.ProduceResults {
+	w.calls++
+	if w.cancel != nil {
+		w.cancel()
+	}
+	return kgo.ProduceResults{{Err: errors.New("broker unavailable")}}
+}
+
+func (w *failingMessageWriter) Close() {}
+
+type commitTrackingReader struct {
+	commits int
+}
+
+func (r *commitTrackingReader) PollFetches(context.Context) kgo.Fetches {
+	return nil
+}
+
+func (r *commitTrackingReader) CommitRecords(context.Context, ...*kgo.Record) error {
+	r.commits++
+	return nil
+}
+
+func (r *commitTrackingReader) Close() {}
+
+type failingSerializer struct{}
+
+func (failingSerializer) Serialize(string, any) ([]byte, error) { return nil, nil }
+
+func (failingSerializer) Deserialize(string, []byte, any) error {
+	return errors.New("decode failed")
+}
 
 type orderCreated struct {
 	OrderID string  `json:"orderId"`
@@ -71,7 +110,7 @@ func TestTraceContextRoundTripThroughHeaders(t *testing.T) {
 		TraceFlags: trace.FlagsSampled,
 	})
 	ctx := trace.ContextWithSpanContext(context.Background(), sc)
-	message := kafka.Message{}
+	message := kgo.Record{}
 
 	injectTrace(ctx, &message)
 	got := trace.SpanContextFromContext(extractTrace(context.Background(), message))
@@ -171,6 +210,89 @@ func TestDLQTopic(t *testing.T) {
 	if got := dlqTopic("hellnet.order.created.v1"); got != "hellnet.order.created.v1.dlq" {
 		t.Fatalf("dlqTopic = %q", got)
 	}
+}
+
+func TestDLQFailureDoesNotCommitOffset(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	writer := &failingMessageWriter{cancel: cancel}
+	reader := &commitTrackingReader{}
+	bus := &Bus{
+		opts:      testOfflineOptions(),
+		dlqWriter: writer,
+	}
+	consumer := &Consumer[orderCreated]{
+		opts:       bus.opts,
+		bus:        bus,
+		client:     reader,
+		serializer: failingSerializer{},
+		group:      "orders",
+	}
+
+	err := consumer.processMessage(ctx, kgo.Record{
+		Topic:     "orders",
+		Partition: 2,
+		Offset:    17,
+		Value:     []byte("bad"),
+	})
+	if err != nil {
+		t.Fatalf("processMessage = %v, want cooperative shutdown", err)
+	}
+	if writer.calls != 1 {
+		t.Fatalf("DLQ writes = %d, want 1 before shutdown", writer.calls)
+	}
+	if reader.commits != 0 {
+		t.Fatalf("commits = %d, want 0 when DLQ fails", reader.commits)
+	}
+}
+
+func TestPublishDLQPreservesMessageMetadata(t *testing.T) {
+	writer := &capturingMessageWriter{}
+	bus := &Bus{dlqWriter: writer}
+	original := kgo.Record{
+		Topic:     "orders",
+		Partition: 2,
+		Offset:    17,
+		Key:       []byte("order-17"),
+		Value:     []byte("payload"),
+		Headers:   []kgo.RecordHeader{{Key: "traceparent", Value: []byte("00-trace")}},
+	}
+
+	if err := bus.publishDLQ(context.Background(), Options{TimeoutProduce: time.Second}, original, "handler failed", "handler", 3); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.messages) != 1 {
+		t.Fatalf("DLQ writes = %d, want 1", len(writer.messages))
+	}
+	got := writer.messages[0]
+	if string(got.Key) != "order-17" || string(got.Value) != "payload" {
+		t.Fatalf("DLQ metadata lost: key=%q value=%q", got.Key, got.Value)
+	}
+	for _, want := range []string{"traceparent", "dlq.attempts", "dlq.timestamp", "dlq.error.type"} {
+		if !hasHeader(got.Headers, want) {
+			t.Fatalf("DLQ headers missing %q: %#v", want, got.Headers)
+		}
+	}
+}
+
+type capturingMessageWriter struct {
+	messages []*kgo.Record
+}
+
+func (w *capturingMessageWriter) ProduceSync(_ context.Context, messages ...*kgo.Record) kgo.ProduceResults {
+	w.messages = append(w.messages, messages...)
+	return nil
+}
+
+func (w *capturingMessageWriter) Close() {}
+
+func hasHeader(headers []kgo.RecordHeader, key string) bool {
+	for _, header := range headers {
+		if header.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func TestJSONSerializer(t *testing.T) {
