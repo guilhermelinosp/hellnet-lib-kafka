@@ -13,8 +13,6 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
-replace github.com/guilhermelinosp/hellnet-lib-environments => /Users/guilhermelino/repositories/hellnet-lib-environments
-
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -24,6 +22,8 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/grafana/pyroscope-go v1.4.2 // indirect
+	github.com/grafana/pyroscope-go/godeltaprof v0.1.11 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -62,5 +62,3 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/grpc v1.83.1 // indirect
 )
-
-replace github.com/guilhermelinosp/hellnet-lib-telemetry => /Users/guilhermelino/repositories/hellnet-lib-telemetry
