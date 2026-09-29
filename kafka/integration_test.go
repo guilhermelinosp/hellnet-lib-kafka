@@ -18,14 +18,14 @@ import (
 // Usage (tools namespace on kind, via kubectl port-forward):
 //
 //	kubectl port-forward -n tools svc/redpanda 19092:9092
-//	export HELLNET_TEST_KAFKA_BROKERS=localhost:19092
+//	export TEST_KAFKA_BROKERS=localhost:19092
 //	go test -tags integration -count=1 -run TestIntegration ./kafka/
 
 func integrationBrokers(t *testing.T) []string {
 	t.Helper()
-	b := os.Getenv("HELLNET_TEST_KAFKA_BROKERS")
+	b := os.Getenv("TEST_KAFKA_BROKERS")
 	if b == "" {
-		t.Skip("HELLNET_TEST_KAFKA_BROKERS not set")
+		t.Skip("TEST_KAFKA_BROKERS not set")
 	}
 	return []string{b}
 }
@@ -75,6 +75,23 @@ func newConsumerWithOptions[T Message](ctx context.Context, h Handler[T], spec H
 		return nil, err
 	}
 	return newConsumerWithBus(h, spec, bus)
+}
+
+func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*Consumer[T], error) {
+	if h == nil {
+		return nil, fmt.Errorf("kafka: handler is nil")
+	}
+	if bus == nil {
+		return nil, fmt.Errorf("kafka: bus is nil")
+	}
+	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- test helper closes the consumer.
+	c := &Consumer[T]{opts: bus.opts, bus: bus, serializer: bus.serializer, runCtx: runCtx, cancelRun: cancelRun}
+	if err := c.Configure(h, spec); err != nil {
+		cancelRun()
+		_ = bus.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 // TestIntegrationPublishConsume covers the core loop: construct once with ctx,

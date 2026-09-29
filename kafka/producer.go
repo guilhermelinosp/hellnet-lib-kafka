@@ -3,6 +3,8 @@ package kafka
 import (
 	"context"
 	"fmt"
+
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 )
 
 // Producer is a type-safe producer bound to a single message type T — generics
@@ -14,9 +16,9 @@ type Producer[T Message] struct {
 }
 
 // NewProducer follows the zero-config New pattern: it creates the base context,
-// loads .env, and resolves all options from HELLNET_KAFKA_*.
-func NewProducer[T Message]() (*Producer[T], error) {
-	bus, err := New()
+// loads .env, and resolves all options from KAFKA_*.
+func NewProducer[T Message](ctx context.Context, ops telemetry.Client) (*Producer[T], error) {
+	bus, err := New(ctx, ops)
 	if err != nil {
 		return nil, err
 	}
