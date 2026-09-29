@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/segmentio/kafka-go"
 )
 
 // Integration tests run against a REAL broker (Redpanda/Kafka).
@@ -18,14 +20,14 @@ import (
 // Usage (tools namespace on kind, via kubectl port-forward):
 //
 //	kubectl port-forward -n tools svc/redpanda 19092:9092
-//	export HELLNET_TEST_KAFKA_BROKERS=localhost:19092
+//	export TEST_KAFKA_BROKERS=localhost:19092
 //	go test -tags integration -count=1 -run TestIntegration ./kafka/
 
 func integrationBrokers(t *testing.T) []string {
 	t.Helper()
-	b := os.Getenv("HELLNET_TEST_KAFKA_BROKERS")
+	b := os.Getenv("TEST_KAFKA_BROKERS")
 	if b == "" {
-		t.Skip("HELLNET_TEST_KAFKA_BROKERS not set")
+		t.Skip("TEST_KAFKA_BROKERS not set")
 	}
 	return []string{b}
 }
@@ -40,8 +42,27 @@ func (evtTest) MessageType() string { return "it.test.v1" }
 func integrationBaseOpts(brokers []string) Options {
 	o := testDefaultOptions()
 	o.Brokers = brokers
+	o.TopicPrefix = "hellnet"
 	o.SecurityProtocol = "plaintext"
 	return o
+}
+
+func ensureIntegrationTopic(t *testing.T, brokers []string, topic string) {
+	t.Helper()
+	conn, err := kafka.Dial("tcp", brokers[0])
+	if err != nil {
+		t.Fatalf("dial kafka: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	err = conn.CreateTopics(kafka.TopicConfig{
+		Topic:             topic,
+		NumPartitions:     1,
+		ReplicationFactor: 1,
+	})
+	if err != nil && !errors.Is(err, kafka.TopicAlreadyExists) {
+		t.Fatalf("create topic %q: %v", topic, err)
+	}
 }
 
 func newProducerWithOptions[T Message](ctx context.Context, o Options) (*Producer[T], error) {
@@ -77,13 +98,31 @@ func newConsumerWithOptions[T Message](ctx context.Context, h Handler[T], spec H
 	return newConsumerWithBus(h, spec, bus)
 }
 
+func newConsumerWithBus[T Message](h Handler[T], spec HandlerSpec, bus *Bus) (*Consumer[T], error) {
+	if h == nil {
+		return nil, fmt.Errorf("kafka: handler is nil")
+	}
+	if bus == nil {
+		return nil, fmt.Errorf("kafka: bus is nil")
+	}
+	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- test helper closes the consumer.
+	c := &Consumer[T]{opts: bus.opts, bus: bus, serializer: bus.serializer, runCtx: runCtx, cancelRun: cancelRun}
+	if err := c.Configure(h, spec); err != nil {
+		cancelRun()
+		_ = bus.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
 // TestIntegrationPublishConsume covers the core loop: construct once with ctx,
 // publish without ctx, consume via Run() into a handler that receives the
 // lib-supplied ctx, then close and observe cooperative stop.
 func TestIntegrationPublishConsume(t *testing.T) {
 	brokers := integrationBrokers(t)
 	ctx := context.Background()
-	topic := "hellnet.it.test.v1" // pré-existente: auto-create in-flight perde batches
+	topic := "hellnet.it.test.v1"
+	ensureIntegrationTopic(t, brokers, topic)
 
 	prod, err := newProducerWithOptions[evtTest](ctx, integrationBaseOpts(brokers))
 	if err != nil {
@@ -159,6 +198,7 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now().UnixNano()
 	topic := "hellnet.it.test.v1"
+	ensureIntegrationTopic(t, brokers, topic)
 
 	boom := errors.New("always fails")
 	var attempts atomic.Int32
@@ -212,6 +252,7 @@ func TestIntegrationCloseCancelsRun(t *testing.T) {
 	brokers := integrationBrokers(t)
 	ctx := context.Background()
 	topic := "hellnet.it.test.v1"
+	ensureIntegrationTopic(t, brokers, topic)
 
 	h := HandlerFunc[evtTest](func(ctx context.Context, msg evtTest, mc Ctx) error { return nil })
 	spec := HandlerSpec{Topic: topic, Group: fmt.Sprintf("grp-stop-%d", time.Now().UnixNano())}

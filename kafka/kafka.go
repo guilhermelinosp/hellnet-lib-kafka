@@ -8,8 +8,8 @@
 //   - Handler[T]/HandlerFunc[T] process consumed messages.
 //   - Bus is the low-level shared producer for multiple message types.
 //
-// It features env-first configuration (HELLNET_KAFKA_* via .env through
-// hellnet-lib-environments), three serializers (JSON, Avro and Protobuf with
+// It features env-first configuration (KAFKA_* via .env through
+// godotenv), three serializers (JSON, Avro and Protobuf with
 // Schema Registry and the Confluent wire format), timeout/retry/circuit
 // breaker on produce, and graceful degradation. All public constructors are
 // zero-config and env-first.
@@ -21,16 +21,33 @@ import (
 	"math"
 	"time"
 
-	"github.com/guilhermelinosp/hellnet-lib-environments/environments"
+	"github.com/guilhermelinosp/hellnet-lib-kafka/internal/env"
+
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 )
+
+// kafkaEnv reads a KAFKA_<name> env var, defaulting to def.
+func kafkaEnv(name, def string) string {
+	return env.String("KAFKA_"+name, def)
+}
+
+// kafkaInt reads an int KAFKA_<name> env var.
+func kafkaInt(name string, def int) int {
+	return env.Int("KAFKA_"+name, def)
+}
+
+// kafkaBool reads a bool KAFKA_<name> env var.
+func kafkaBool(name string, def bool) bool {
+	return env.Bool("KAFKA_"+name, def)
+}
 
 // Options configures the Kafka bus. All values are env-first overridable.
 type Options struct {
 	// Brokers is the list of bootstrap servers.
 	Brokers []string
-	// ConsumerGroup is required for consumers (HELLNET_KAFKA_CONSUMER_GROUP).
+	// ConsumerGroup is required for consumers (KAFKA_CONSUMER_GROUP).
 	ConsumerGroup string
-	// TopicPrefix optionally prefixes every topic (HELLNET_KAFKA_TOPIC_PREFIX).
+	// TopicPrefix optionally prefixes every topic (KAFKA_TOPIC_PREFIX).
 	TopicPrefix string
 	// SecurityProtocol: plaintext, ssl, sasl_plaintext, sasl_ssl.
 	SecurityProtocol string
@@ -69,24 +86,24 @@ type Options struct {
 // validate checks required and supported option values.
 func (o *Options) validate() error {
 	if len(o.Brokers) == 0 {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_BROKERS is empty")
+		return fmt.Errorf("kafka: KAFKA_BROKERS is empty")
 	}
 	if o.MaxRetries < 1 {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_MAX_RETRIES must be >= 1")
+		return fmt.Errorf("kafka: KAFKA_MAX_RETRIES must be >= 1")
 	}
 	if o.CircuitBreakerCount < 1 {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT must be >= 1")
+		return fmt.Errorf("kafka: KAFKA_CIRCUIT_BREAKER_COUNT must be >= 1")
 	}
 	if uint64(o.CircuitBreakerCount) > uint64(math.MaxUint32) {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT must be <= %d", uint64(math.MaxUint32))
+		return fmt.Errorf("kafka: KAFKA_CIRCUIT_BREAKER_COUNT must be <= %d", uint64(math.MaxUint32))
 	}
 	switch o.SecurityProtocol {
 	case "plaintext", "ssl", "sasl_plaintext", "sasl_ssl":
 	default:
-		return fmt.Errorf("kafka: unsupported HELLNET_KAFKA_SECURITY_PROTOCOL %q", o.SecurityProtocol)
+		return fmt.Errorf("kafka: unsupported KAFKA_SECURITY_PROTOCOL %q", o.SecurityProtocol)
 	}
 	if (o.SecurityProtocol == "sasl_plaintext" || o.SecurityProtocol == "sasl_ssl") && o.SASLPassword == "" {
-		return fmt.Errorf("kafka: HELLNET_KAFKA_SASL_PASSWORD is required for %s", o.SecurityProtocol)
+		return fmt.Errorf("kafka: KAFKA_SASL_PASSWORD is required for %s", o.SecurityProtocol)
 	}
 	return nil
 }
@@ -102,54 +119,57 @@ func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
 		return JSONSerializer{}, nil
 	case "avro":
 		if o.SchemaRegistryURL == "" {
-			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
+			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
 		}
 		return &AvroSerializer{registry: newRegistryClient(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath)}, nil
 	case "protobuf":
 		if o.SchemaRegistryURL == "" {
-			return nil, fmt.Errorf("kafka: HELLNET_KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
+			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
 		}
 		return &ProtobufSerializer{registry: newRegistryClient(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath)}, nil
 	default:
-		return nil, fmt.Errorf("kafka: unsupported HELLNET_KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
+		return nil, fmt.Errorf("kafka: unsupported KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
 	}
 }
 
 // New follows the hellnet-lib-telemetry constructor pattern: it creates the
 // base context, loads .env before reading configuration, and builds Options
-// entirely from HELLNET_KAFKA_* variables and defaults. A consumer group is
+// entirely from KAFKA_* variables and defaults. A consumer group is
 // only required if a consumer will be started.
-func New() (*Bus, error) {
-	ctx := context.Background()
-
-	// Env-first: load .env before reading HELLNET_KAFKA_* variables. Best
+func New(ctx context.Context, ops telemetry.Client) (*Bus, error) {
+	// Env-first: load .env before reading KAFKA_* variables. Best
 	// effort: without a file (or with a parse error), process env still applies.
-	_ = environments.LoadDotEnv()
+	_ = env.LoadDotEnv()
 
 	o := Options{
-		Brokers:               splitBrokers(environments.Get("HELLNET_KAFKA_BROKERS", "")),
-		ConsumerGroup:         environments.Get("HELLNET_KAFKA_CONSUMER_GROUP", ""),
-		TopicPrefix:           environments.Get("HELLNET_KAFKA_TOPIC_PREFIX", ""),
-		SecurityProtocol:      environments.Get("HELLNET_KAFKA_SECURITY_PROTOCOL", "sasl_ssl"),
-		SASLMechanism:         environments.Get("HELLNET_KAFKA_SASL_MECHANISM", "SCRAM-SHA-512"),
-		SASLUsername:          environments.Get("HELLNET_KAFKA_SASL_USERNAME", "hellnet-app"),
-		SASLPassword:          environments.Get("HELLNET_KAFKA_SASL_PASSWORD", ""),
-		SSLCA:                 environments.Get("HELLNET_KAFKA_SSL_CA_LOCATION", ""),
-		SSLInsecureSkipVerify: environments.Get("HELLNET_KAFKA_SSL_INSECURE_SKIP_VERIFY", "false") == "true",
-		Idempotent:            environments.Get("HELLNET_KAFKA_IDEMPOTENT", "true") == "true",
-		MaxRetries:            environments.GetInt("HELLNET_KAFKA_MAX_RETRIES", "3"),
-		RetryDelay:            time.Duration(environments.GetInt("HELLNET_KAFKA_RETRY_DELAY_MS", "200")) * time.Millisecond,
-		TimeoutProduce:        time.Duration(environments.GetInt("HELLNET_KAFKA_TIMEOUT_PRODUCE_MS", "30000")) * time.Millisecond,
-		CircuitBreakerCount:   environments.GetInt("HELLNET_KAFKA_CIRCUIT_BREAKER_COUNT", "5"),
-		DeadLetterTopic:       environments.Get("HELLNET_KAFKA_DEAD_LETTER_TOPIC", ""),
-		DefaultSerializer:     environments.Get("HELLNET_KAFKA_DEFAULT_SERIALIZER", "json"),
-		SchemaRegistryURL:     environments.Get("HELLNET_KAFKA_SCHEMA_REGISTRY_URL", ""),
-		SchemaRegistryPath:    environments.Get("HELLNET_KAFKA_SCHEMA_REGISTRY_PATH", "/apis/ccompat/v6"),
+		Brokers:               splitBrokers(kafkaEnv("BROKERS", "")),
+		ConsumerGroup:         kafkaEnv("CONSUMER_GROUP", ""),
+		TopicPrefix:           kafkaEnv("TOPIC_PREFIX", ""),
+		SecurityProtocol:      kafkaEnv("SECURITY_PROTOCOL", "sasl_ssl"),
+		SASLMechanism:         kafkaEnv("SASL_MECHANISM", "SCRAM-SHA-512"),
+		SASLUsername:          kafkaEnv("SASL_USERNAME", "hellnet-app"),
+		SASLPassword:          kafkaEnv("SASL_PASSWORD", ""),
+		SSLCA:                 kafkaEnv("SSL_CA_LOCATION", ""),
+		SSLInsecureSkipVerify: kafkaBool("SSL_INSECURE_SKIP_VERIFY", false),
+		Idempotent:            kafkaBool("IDEMPOTENT", true),
+		MaxRetries:            kafkaInt("MAX_RETRIES", 3),
+		RetryDelay:            time.Duration(kafkaInt("RETRY_DELAY_MS", 200)) * time.Millisecond,
+		TimeoutProduce:        time.Duration(kafkaInt("TIMEOUT_PRODUCE_MS", 30000)) * time.Millisecond,
+		CircuitBreakerCount:   kafkaInt("CIRCUIT_BREAKER_COUNT", 5),
+		DeadLetterTopic:       kafkaEnv("DEAD_LETTER_TOPIC", ""),
+		DefaultSerializer:     kafkaEnv("DEFAULT_SERIALIZER", "json"),
+		SchemaRegistryURL:     kafkaEnv("SCHEMA_REGISTRY_URL", ""),
+		SchemaRegistryPath:    kafkaEnv("SCHEMA_REGISTRY_PATH", "/apis/ccompat/v6"),
 	}
 	if o.SchemaRegistryPath == "none" || o.SchemaRegistryPath == "/" {
 		o.SchemaRegistryPath = ""
 	}
-	return newBusWithOptions(ctx, o)
+	b, err := newBusWithOptions(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	b.ops = ops
+	return b, nil
 }
 
 func newWithOptions(ctx context.Context, opts Options) (*Bus, error) {
@@ -172,8 +192,8 @@ func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 }
 
 // MustNew is like New but panics if construction fails.
-func MustNew() *Bus {
-	b, err := New()
+func MustNew(ctx context.Context, ops telemetry.Client) *Bus {
+	b, err := New(ctx, ops)
 	if err != nil {
 		panic(err)
 	}
