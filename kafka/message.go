@@ -18,6 +18,9 @@ type Ctx struct {
 	Partition int
 	Offset    int64
 	Key       []byte
+	// Headers are the record headers (correlation data set by the producer with
+	// ContextWithHeaders, plus trace propagation), the last value winning.
+	Headers map[string]string
 }
 
 // Handler processes a message of type T. The ctx argument is supplied by the
