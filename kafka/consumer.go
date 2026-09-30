@@ -38,6 +38,7 @@ type Consumer[T Message] struct {
 // NewConsumer creates a consumer with the caller's context and telemetry.
 // Configure must be called before Run to attach the handler and topic/group.
 // NewConsumer creates a consumer.
+//
 // Deprecated: use NewConsumerWithOptions with WithInstrumentation.
 func NewConsumer[T Message](ctx context.Context, ops telemetry.Client, options ...Option) (*Consumer[T], error) {
 	bus, err := New(ctx, ops, options...)

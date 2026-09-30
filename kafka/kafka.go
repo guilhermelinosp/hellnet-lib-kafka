@@ -146,6 +146,7 @@ func WithInstrumentation(inst instrument.Instrumentation) Option {
 }
 
 // New creates a bus. The telemetry.Client parameter is retained for compatibility.
+//
 // Deprecated: use NewWithOptions with WithInstrumentation.
 func New(ctx context.Context, ops telemetry.Client, options ...Option) (*Bus, error) {
 	b, err := NewWithOptions(ctx, append([]Option{WithInstrumentation(legacyInstrumentation(ops))}, options...)...)
@@ -223,6 +224,7 @@ func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 
 // MustNew is like New but panics if construction fails.
 // MustNew is like New but panics if construction fails.
+//
 // Deprecated: pass WithInstrumentation to New.
 func MustNew(ctx context.Context, ops telemetry.Client, options ...Option) *Bus {
 	b, err := New(ctx, ops, options...)

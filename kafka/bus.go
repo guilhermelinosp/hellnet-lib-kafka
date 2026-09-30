@@ -65,6 +65,7 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 }
 
 // Publish serializes msg and produces it using the construction context.
+//
 // Deprecated: use PublishContext with the caller's request context.
 func (b *Bus) Publish(msg Message) error {
 	return b.PublishContext(b.legacyContext(), msg)
@@ -134,6 +135,7 @@ func (b *Bus) PublishBatchContext(ctx context.Context, messages ...Message) erro
 }
 
 // Close releases the franz-go producer client.
+//
 // Deprecated: use Shutdown with a caller-owned context.
 func (b *Bus) Close() error {
 	if b.client == nil {

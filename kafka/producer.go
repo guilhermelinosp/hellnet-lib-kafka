@@ -18,6 +18,7 @@ type Producer[T Message] struct {
 // NewProducer follows the zero-config New pattern: it creates the base context,
 // loads .env, and resolves all options from KAFKA_*.
 // NewProducer creates a producer.
+//
 // Deprecated: use NewProducerWithOptions with WithInstrumentation.
 func NewProducer[T Message](ctx context.Context, ops telemetry.Client, options ...Option) (*Producer[T], error) {
 	bus, err := New(ctx, ops, options...)
@@ -39,6 +40,7 @@ func NewProducerWithOptions[T Message](ctx context.Context, options ...Option) (
 
 // Publish produces msg to "{prefix}.{messageType}". The constructor context is
 // used internally, with each attempt bounded by TimeoutProduce.
+//
 // Deprecated: use PublishContext with the caller's request context.
 func (p *Producer[T]) Publish(msg T) error {
 	return p.bus.Publish(msg)
@@ -66,6 +68,7 @@ func (p *Producer[T]) Shutdown(ctx context.Context) error {
 }
 
 // Close releases the underlying connection.
+//
 // Deprecated: use Shutdown with a caller-owned context.
 func (p *Producer[T]) Close() error {
 	if p.bus == nil {
