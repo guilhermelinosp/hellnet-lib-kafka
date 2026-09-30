@@ -31,13 +31,22 @@ func NewAvroSerializer(url, path string) (*AvroSerializer, error) {
 	if url == "" {
 		return nil, fmt.Errorf("kafka: schema registry URL is empty")
 	}
-	return &AvroSerializer{registry: newRegistryClient(context.Background(), url, path)}, nil
+	return &AvroSerializer{registry: newRegistryClient(url, path)}, nil
 }
 
 // Serialize encodes value with the latest schema for the topic and prepends
 // the Confluent wire header.
 func (a *AvroSerializer) Serialize(topic string, value any) ([]byte, error) {
-	schemaStr, id, err := a.registry.latestSchema(topic)
+	return a.SerializeContext(context.Background(), topic, value)
+}
+
+// SerializeContext encodes value using a schema lookup derived from ctx.
+func (a *AvroSerializer) SerializeContext(ctx context.Context, topic string, value any) ([]byte, error) {
+	return a.serialize(ctx, topic, value)
+}
+
+func (a *AvroSerializer) serialize(ctx context.Context, topic string, value any) ([]byte, error) {
+	schemaStr, id, err := a.registry.latestSchemaContext(ctx, topic)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: avro schema %s: %w", topic, err)
 	}
@@ -59,10 +68,19 @@ func (a *AvroSerializer) Serialize(topic string, value any) ([]byte, error) {
 // Deserialize decodes a Confluent wire-format payload into out, fetching the
 // schema referenced by the embedded schema id.
 func (a *AvroSerializer) Deserialize(_ string, data []byte, out any) error {
+	return a.DeserializeContext(context.Background(), "", data, out)
+}
+
+// DeserializeContext decodes data using a schema lookup derived from ctx.
+func (a *AvroSerializer) DeserializeContext(ctx context.Context, _ string, data []byte, out any) error {
+	return a.deserialize(ctx, data, out)
+}
+
+func (a *AvroSerializer) deserialize(ctx context.Context, data []byte, out any) error {
 	if len(data) < 5 || data[0] != 0 {
 		return fmt.Errorf("kafka: invalid confluent avro wire format")
 	}
-	schemaStr, err := a.registry.schemaByID(int(binary.BigEndian.Uint32(data[1:5])))
+	schemaStr, err := a.registry.schemaByIDContext(ctx, int(binary.BigEndian.Uint32(data[1:5])))
 	if err != nil {
 		return fmt.Errorf("kafka: avro schema id: %w", err)
 	}

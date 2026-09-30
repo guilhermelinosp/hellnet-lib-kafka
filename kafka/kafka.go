@@ -23,6 +23,7 @@ import (
 
 	"github.com/guilhermelinosp/hellnet-lib-kafka/internal/env"
 
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 )
 
@@ -81,6 +82,7 @@ type Options struct {
 	SchemaRegistryPath string
 	// DeadLetterTopic overrides the default "{topic}.dlq".
 	DeadLetterTopic string
+	instrumentation instrument.Instrumentation
 }
 
 // validate checks required and supported option values.
@@ -110,11 +112,9 @@ func (o *Options) validate() error {
 
 // buildSerializer selects the serializer per DefaultSerializer ("json", "avro"
 // or "protobuf"). Avro and Protobuf require a Schema Registry URL
-// (hellnet-lib-schema). The ctx
-// becomes the registry client's base context: schema fetches derive their
-// timeout budget from it, so cancelling the ctx captured at construction also
-// aborts in-flight registry lookups.
-func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
+// (hellnet-lib-schema). Active operation contexts are passed at serialization
+// time through ContextSerializer rather than retained by the client.
+func (o *Options) buildSerializer() (Serializer, error) {
 	switch o.DefaultSerializer {
 	case "", "json":
 		return JSONSerializer{}, nil
@@ -122,22 +122,32 @@ func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
 		}
-		return &AvroSerializer{registry: newRegistryClient(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath)}, nil
+		return &AvroSerializer{registry: newRegistryClientWithInstrumentation(o.SchemaRegistryURL, o.SchemaRegistryPath, o.instrumentation)}, nil
 	case "protobuf":
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
 		}
-		return &ProtobufSerializer{registry: newRegistryClient(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath)}, nil
+		return &ProtobufSerializer{registry: newRegistryClientWithInstrumentation(o.SchemaRegistryURL, o.SchemaRegistryPath, o.instrumentation)}, nil
 	default:
 		return nil, fmt.Errorf("kafka: unsupported KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
 	}
 }
 
-// New follows the hellnet-lib-telemetry constructor pattern: it creates the
-// base context, loads .env before reading configuration, and builds Options
-// entirely from KAFKA_* variables and defaults. A consumer group is
-// only required if a consumer will be started.
-func New(ctx context.Context, ops telemetry.Client) (*Bus, error) {
+// Option configures a Kafka constructor.
+type Option func(*constructorOptions)
+
+type constructorOptions struct {
+	inst instrument.Instrumentation
+}
+
+// WithInstrumentation supplies the Hellnet observability contract.
+func WithInstrumentation(inst instrument.Instrumentation) Option {
+	return func(o *constructorOptions) { o.inst = inst }
+}
+
+// New creates a bus. The telemetry.Client parameter is retained for compatibility.
+// Deprecated: pass WithInstrumentation and use the instrument contract.
+func New(ctx context.Context, ops telemetry.Client, options ...Option) (*Bus, error) {
 	// Env-first: load .env before reading KAFKA_* variables. Best
 	// effort: without a file (or with a parse error), process env still applies.
 	_ = env.Environment()
@@ -165,26 +175,34 @@ func New(ctx context.Context, ops telemetry.Client) (*Bus, error) {
 	if o.SchemaRegistryPath == "none" || o.SchemaRegistryPath == "/" {
 		o.SchemaRegistryPath = ""
 	}
+	config := constructorOptions{inst: legacyInstrumentation(ops)}
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
+	}
+	o.instrumentation = config.inst
 	b, err := newBusWithOptions(ctx, o)
 	if err != nil {
 		return nil, err
 	}
 	b.ops = ops
+	b.obs = newObservability(ctx, config.inst)
 	return b, nil
 }
 
-func newWithOptions(ctx context.Context, opts Options) (*Bus, error) {
-	if ctx == nil {
-		ctx = context.Background()
+func legacyInstrumentation(ops telemetry.Client) instrument.Instrumentation {
+	if inst, ok := any(ops).(instrument.Instrumentation); ok {
+		return inst
 	}
-	return newBusWithOptions(ctx, opts)
+	return nil
 }
 
 func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	s, err := o.buildSerializer(ctx)
+	s, err := o.buildSerializer()
 	if err != nil {
 		return nil, err
 	}
@@ -193,8 +211,10 @@ func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 }
 
 // MustNew is like New but panics if construction fails.
-func MustNew(ctx context.Context, ops telemetry.Client) *Bus {
-	b, err := New(ctx, ops)
+// MustNew is like New but panics if construction fails.
+// Deprecated: pass WithInstrumentation to New.
+func MustNew(ctx context.Context, ops telemetry.Client, options ...Option) *Bus {
+	b, err := New(ctx, ops, options...)
 	if err != nil {
 		panic(err)
 	}

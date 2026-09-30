@@ -17,8 +17,10 @@ type Producer[T Message] struct {
 
 // NewProducer follows the zero-config New pattern: it creates the base context,
 // loads .env, and resolves all options from KAFKA_*.
-func NewProducer[T Message](ctx context.Context, ops telemetry.Client) (*Producer[T], error) {
-	bus, err := New(ctx, ops)
+// NewProducer creates a producer.
+// Deprecated: pass WithInstrumentation and use the instrument contract.
+func NewProducer[T Message](ctx context.Context, ops telemetry.Client, options ...Option) (*Producer[T], error) {
+	bus, err := New(ctx, ops, options...)
 	if err != nil {
 		return nil, err
 	}

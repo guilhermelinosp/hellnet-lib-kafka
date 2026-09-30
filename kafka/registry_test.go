@@ -3,35 +3,69 @@ package kafka
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/guilhermelinosp/hellnet-lib-kafka/internal/obstest"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// TestRegistryFetchDerivesBaseContext proves the registry client derives its
-// per-request timeout from the base context captured at construction (N4): a
-// cancelled base ctx aborts the fetch instead of silently using Background.
-func TestRegistryFetchDerivesBaseContext(t *testing.T) {
+// TestRegistryFetchDerivesOperationContext proves a cancelled active
+// operation context aborts the schema lookup instead of using Background.
+func TestRegistryFetchDerivesOperationContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := newRegistryClient(ctx, "http://127.0.0.1:1", "")
+	c := newRegistryClient("http://127.0.0.1:1", "")
 	cancel()
 
-	err := c.get("/subjects/some-subject/versions/latest", &schemaResponse{})
+	err := c.getContext(ctx, "/subjects/some-subject/versions/latest", &schemaResponse{})
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("get err = %v, want context.Canceled derived from the base ctx", err)
 	}
 }
 
-// TestRegistryStandaloneDefaultsToBackground proves standalone construction
-// (nil base ctx, e.g. NewAvroSerializer/NewProtobufSerializer used directly)
-// keeps working: the fetch is attempted against Background + timeout budget,
-// failing with a connection error rather than a context error.
+// TestRegistryStandaloneDefaultsToBackground proves a standalone serializer
+// can explicitly use Background with the registry timeout budget.
 func TestRegistryStandaloneDefaultsToBackground(t *testing.T) {
-	c := newRegistryClient(nil, "http://127.0.0.1:1", "")
+	c := newRegistryClient("http://127.0.0.1:1", "")
 
-	err := c.get("/subjects/some-subject/versions/latest", &schemaResponse{})
+	err := c.getContext(context.Background(), "/subjects/some-subject/versions/latest", &schemaResponse{})
 	if err == nil {
 		t.Fatal("expected connection error against closed port")
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("standalone fetch failed with context error %v; want connection error", err)
+	}
+}
+
+func TestRegistryRequestIsChildOfActiveOperation(t *testing.T) {
+	h := obstest.New(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/subjects/orders/versions/latest" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"schema":"{}","id":1}`))
+	}))
+	defer server.Close()
+
+	ctx, parent := h.TracerProvider().Tracer("caller").Start(context.Background(), "caller")
+	ctx, send := h.TracerProvider().Tracer("kafka").Start(ctx, "send orders")
+	c := newRegistryClientWithInstrumentation(server.URL, "", h)
+	if _, _, err := c.latestSchemaContext(ctx, "orders"); err != nil {
+		t.Fatal(err)
+	}
+	send.End()
+	parent.End()
+
+	var requestSpan sdktrace.ReadOnlySpan
+	for _, span := range h.Spans() {
+		if span.SpanKind() == trace.SpanKindClient {
+			requestSpan = span
+			break
+		}
+	}
+	if requestSpan == nil || !obstest.ChildOf(h.SpansByName("send orders")[0], requestSpan) {
+		t.Fatalf("schema registry span hierarchy = %#v", h.Spans())
 	}
 }

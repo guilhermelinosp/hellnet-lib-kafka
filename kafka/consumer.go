@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"reflect"
 	"time"
 
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/messaging"
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type consumerClient interface {
@@ -30,24 +33,21 @@ type Consumer[T Message] struct {
 	topic      string
 	group      string
 	maxRetries int
-	runCtx     context.Context
-	cancelRun  context.CancelFunc
 }
 
 // NewConsumer creates a consumer with the caller's context and telemetry.
 // Configure must be called before Run to attach the handler and topic/group.
-func NewConsumer[T Message](ctx context.Context, ops telemetry.Client) (*Consumer[T], error) {
-	bus, err := New(ctx, ops)
+// NewConsumer creates a consumer.
+// Deprecated: pass WithInstrumentation and use the instrument contract.
+func NewConsumer[T Message](ctx context.Context, ops telemetry.Client, options ...Option) (*Consumer[T], error) {
+	bus, err := New(ctx, ops, options...)
 	if err != nil {
 		return nil, err
 	}
-	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- cancelRun is stored and invoked by Close.
 	return &Consumer[T]{
 		opts:       bus.opts,
 		bus:        bus,
 		serializer: bus.serializer,
-		runCtx:     runCtx,
-		cancelRun:  cancelRun,
 	}, nil
 }
 
@@ -106,24 +106,20 @@ func (c *Consumer[T]) Run() error {
 	if c.client == nil {
 		return fmt.Errorf("kafka: consumer is not configured; call Configure first")
 	}
-	return c.run(c.runCtx)
+	return c.runWithoutContext()
 }
 
-// RunContext consumes with an additional caller-owned cancellation boundary.
+func (c *Consumer[T]) runWithoutContext() error { return c.run(backgroundContext()) }
+
+// RunContext consumes until the caller cancels ctx or Close closes the client.
 func (c *Consumer[T]) RunContext(ctx context.Context) error {
 	if c.client == nil {
 		return fmt.Errorf("kafka: consumer is not configured; call Configure first")
 	}
 	if ctx == nil {
-		return c.Run()
+		return c.runWithoutContext()
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(c.runCtx, cancel)
-	defer func() {
-		stop()
-		cancel()
-	}()
-	return c.run(runCtx)
+	return c.run(ctx)
 }
 
 func (c *Consumer[T]) run(ctx context.Context) error {
@@ -135,11 +131,7 @@ func (c *Consumer[T]) run(ctx context.Context) error {
 				return nil
 			}
 			fetchFails++
-			slog.Warn("kafka: transient fetch error; retrying",
-				slog.String("topic", c.topic),
-				slog.String("group", c.group),
-				slog.Int("consecutive_failures", fetchFails),
-				slog.Any("error", err))
+			c.logger().Warn(ctx, "kafka: transient fetch error; retrying", "topic", c.topic, "group", c.group, "consecutive_failures", fetchFails, "error", err)
 			if !c.sleepThroughShutdown(ctx, fetchBackoff(fetchFails-1)) {
 				return nil
 			}
@@ -161,15 +153,37 @@ func (c *Consumer[T]) run(ctx context.Context) error {
 	}
 }
 
-func (c *Consumer[T]) processMessage(ctx context.Context, m kgo.Record) error {
-	ctx = extractTrace(ctx, m)
+func (c *Consumer[T]) processMessage(ctx context.Context, m kgo.Record) (err error) {
+	obs := newObservability(ctx, nil)
+	if c.bus != nil && c.bus.obs.inst != nil {
+		obs = c.bus.obs
+	}
+	ctx = extractTraceWith(ctx, m, obs.inst.Propagator())
+	ctx, span := obs.tracer.Start(ctx, messaging.ProcessSpanName(m.Topic),
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(messaging.System("kafka"), messaging.DestinationName(m.Topic), messaging.OperationType("process"), messaging.OperationName("process"), messaging.DestinationPartitionID(fmt.Sprintf("%d", m.Partition)), messaging.KafkaOffset(m.Offset), messaging.ConsumerGroupName(c.group)))
+	defer span.End()
+	started := time.Now()
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		obs.observeProcess(ctx, m.Topic, result, started)
+	}()
+	return c.processMessageBody(ctx, m)
+}
+
+func (c *Consumer[T]) processMessageBody(ctx context.Context, m kgo.Record) error {
 	var msg T
 	out := any(&msg)
 	if t := reflect.TypeOf(msg); t != nil && t.Kind() == reflect.Pointer {
 		msg = reflect.New(t.Elem()).Interface().(T)
 		out = any(msg)
 	}
-	if err := c.serializer.Deserialize(m.Topic, m.Value, out); err != nil {
+	if err := deserialize(ctx, c.serializer, m.Topic, m.Value, out); err != nil {
 		if !c.publishDLQWithRetry(ctx, m, "deserialize: "+err.Error(), "deserialize") {
 			return nil
 		}
@@ -212,18 +226,19 @@ func (c *Consumer[T]) publishDLQWithRetry(ctx context.Context, m kgo.Record, rea
 		if err := c.bus.publishDLQ(ctx, c.opts, m, reason, errorType, attempt); err == nil {
 			return true
 		} else {
-			slog.Error("kafka: failed to publish message to DLQ; retrying",
-				slog.String("topic", m.Topic),
-				slog.String("group", c.group),
-				slog.Int("partition", int(m.Partition)),
-				slog.Int64("offset", m.Offset),
-				slog.Int("attempt", attempt),
-				slog.Any("error", err))
+			c.logger().Error(ctx, "kafka: failed to publish message to DLQ; retrying", "topic", m.Topic, "group", c.group, "partition", m.Partition, "offset", m.Offset, "attempt", attempt, "error", err)
 		}
 		if !c.sleepThroughShutdown(ctx, fetchBackoff(attempt-1)) {
 			return false
 		}
 	}
+}
+
+func (c *Consumer[T]) logger() instrument.Logger {
+	if c.bus != nil && c.bus.obs.logger != nil {
+		return c.bus.obs.logger
+	}
+	return instrument.Noop().Logger(instrumentationScope)
 }
 
 func (c *Consumer[T]) handle(ctx context.Context, msg T, m kgo.Record) error {
@@ -233,11 +248,6 @@ func (c *Consumer[T]) handle(ctx context.Context, msg T, m kgo.Record) error {
 			Partition: int(m.Partition),
 			Offset:    m.Offset,
 			Key:       m.Key,
-		})
-	}
-	if c.bus != nil && c.bus.ops != nil {
-		return c.bus.ops.Trace(ctx).Span("kafka.consume", func(ctx context.Context) error {
-			return fn(ctx)
 		})
 	}
 	return fn(ctx)
@@ -253,7 +263,6 @@ func isCtxErr(err error) bool {
 
 // Close cancels consumption and releases the franz-go clients.
 func (c *Consumer[T]) Close() error {
-	c.cancelRun()
 	if c.client != nil {
 		c.client.Close()
 	}

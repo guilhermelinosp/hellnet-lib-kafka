@@ -10,6 +10,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func urlPathEscape(s string) string {
@@ -36,19 +39,22 @@ type registryClient struct {
 	path    string
 	http    *http.Client
 	timeout time.Duration
-	// baseCtx is captured once at construction (the bus/base ctx when built
-	// through New/NewConsumer); every fetch derives its timeout from it.
-	// nil means standalone use: Background.
-	baseCtx context.Context
 }
 
-func newRegistryClient(baseCtx context.Context, url, path string) *registryClient {
+func newRegistryClient(url, path string) *registryClient {
+	return newRegistryClientWithInstrumentation(url, path, nil)
+}
+
+func newRegistryClientWithInstrumentation(url, path string, inst instrument.Instrumentation) *registryClient {
+	transport := http.DefaultTransport
+	if inst != nil {
+		transport = otelhttp.NewTransport(transport, otelhttp.WithTracerProvider(inst.TracerProvider()))
+	}
 	return &registryClient{
 		base:    strings.TrimSuffix(url, "/"),
 		path:    strings.TrimSuffix(path, "/"),
-		http:    &http.Client{},
+		http:    &http.Client{Transport: transport},
 		timeout: 10 * time.Second,
-		baseCtx: baseCtx,
 	}
 }
 
@@ -57,8 +63,8 @@ type schemaResponse struct {
 	ID     int    `json:"id"`
 }
 
-func (c *registryClient) get(path string, out any) error {
-	ctx, cancel := newTimeoutContext(c.baseCtx, c.timeout)
+func (c *registryClient) getContext(parent context.Context, path string, out any) error {
+	ctx, cancel := newTimeoutContext(parent, c.timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {
@@ -82,9 +88,9 @@ func (c *registryClient) get(path string, out any) error {
 // latestSchema returns the latest schema string and id for a subject. The id
 // is already uint32 (Confluent wire-format width); non-negative ids are the
 // only values a compliant registry returns.
-func (c *registryClient) latestSchema(subject string) (string, uint32, error) {
+func (c *registryClient) latestSchemaContext(ctx context.Context, subject string) (string, uint32, error) {
 	var sr schemaResponse
-	if err := c.get(c.path+"/subjects/"+urlPathEscape(subject)+"/versions/latest", &sr); err != nil {
+	if err := c.getContext(ctx, c.path+"/subjects/"+urlPathEscape(subject)+"/versions/latest", &sr); err != nil {
 		return "", 0, err
 	}
 	if sr.ID < 0 || uint64(sr.ID) > uint64(math.MaxUint32) {
@@ -95,9 +101,9 @@ func (c *registryClient) latestSchema(subject string) (string, uint32, error) {
 }
 
 // schemaByID returns the schema string for a global schema id.
-func (c *registryClient) schemaByID(id int) (string, error) {
+func (c *registryClient) schemaByIDContext(ctx context.Context, id int) (string, error) {
 	var sr schemaResponse
-	if err := c.get(fmt.Sprintf(c.path+"/schemas/ids/%d", id), &sr); err != nil {
+	if err := c.getContext(ctx, fmt.Sprintf(c.path+"/schemas/ids/%d", id), &sr); err != nil {
 		return "", err
 	}
 	return sr.Schema, nil
