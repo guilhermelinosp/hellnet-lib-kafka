@@ -18,7 +18,7 @@ type Producer[T Message] struct {
 // NewProducer follows the zero-config New pattern: it creates the base context,
 // loads .env, and resolves all options from KAFKA_*.
 // NewProducer creates a producer.
-// Deprecated: pass WithInstrumentation and use the instrument contract.
+// Deprecated: use NewProducerWithOptions with WithInstrumentation.
 func NewProducer[T Message](ctx context.Context, ops telemetry.Client, options ...Option) (*Producer[T], error) {
 	bus, err := New(ctx, ops, options...)
 	if err != nil {
@@ -27,13 +27,46 @@ func NewProducer[T Message](ctx context.Context, ops telemetry.Client, options .
 	return &Producer[T]{bus: bus}, nil
 }
 
+// NewProducerWithOptions creates a producer from KAFKA_* environment variables.
+// Supply the Hellnet observability contract with WithInstrumentation.
+func NewProducerWithOptions[T Message](ctx context.Context, options ...Option) (*Producer[T], error) {
+	bus, err := NewWithOptions(ctx, options...)
+	if err != nil {
+		return nil, err
+	}
+	return &Producer[T]{bus: bus}, nil
+}
+
 // Publish produces msg to "{prefix}.{messageType}". The constructor context is
 // used internally, with each attempt bounded by TimeoutProduce.
+// Deprecated: use PublishContext with the caller's request context.
 func (p *Producer[T]) Publish(msg T) error {
 	return p.bus.Publish(msg)
 }
 
+// PublishContext produces msg to "{prefix}.{messageType}" using ctx, so the
+// send span is a child of the caller's active span.
+func (p *Producer[T]) PublishContext(ctx context.Context, msg T) error {
+	if p.bus == nil {
+		return fmt.Errorf("kafka: producer already closed")
+	}
+	return p.bus.PublishContext(ctx, msg)
+}
+
+// Shutdown releases the underlying connection unless ctx is already canceled.
+func (p *Producer[T]) Shutdown(ctx context.Context) error {
+	if p.bus == nil {
+		return fmt.Errorf("kafka: producer already closed")
+	}
+	if err := p.bus.Shutdown(ctx); err != nil {
+		return err
+	}
+	p.bus = nil
+	return nil
+}
+
 // Close releases the underlying connection.
+// Deprecated: use Shutdown with a caller-owned context.
 func (p *Producer[T]) Close() error {
 	if p.bus == nil {
 		return fmt.Errorf("kafka: producer already closed")
