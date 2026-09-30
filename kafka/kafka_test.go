@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/guilhermelinosp/hellnet-lib-kafka/internal/obstest"
+	"github.com/sony/gobreaker"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -30,6 +32,22 @@ func (w *failingMessageWriter) ProduceSync(context.Context, ...*kgo.Record) kgo.
 }
 
 func (w *failingMessageWriter) Close() {}
+
+type contextSerializer struct {
+	serializeContext   context.Context
+	deserializeContext context.Context
+}
+
+func (contextSerializer) Serialize(string, any) ([]byte, error) { return []byte(`{}`), nil }
+func (contextSerializer) Deserialize(string, []byte, any) error { return nil }
+func (s *contextSerializer) SerializeContext(ctx context.Context, _ string, _ any) ([]byte, error) {
+	s.serializeContext = ctx
+	return []byte(`{}`), nil
+}
+func (s *contextSerializer) DeserializeContext(ctx context.Context, _ string, _ []byte, _ any) error {
+	s.deserializeContext = ctx
+	return nil
+}
 
 type commitTrackingReader struct {
 	commits int
@@ -89,7 +107,7 @@ func TestTopicName(t *testing.T) {
 
 func TestSendMetricIsRecorded(t *testing.T) {
 	h := obstest.New(t)
-	obs := newObservability(h)
+	obs := newObservability(context.Background(), h)
 	ctx, parent := h.TracerProvider().Tracer("caller").Start(context.Background(), "caller")
 	_, span := obs.tracer.Start(ctx, "send order.created.v1")
 	obs.observeSend(ctx, "order.created.v1", "success", time.Now())
@@ -97,6 +115,70 @@ func TestSendMetricIsRecorded(t *testing.T) {
 	parent.End()
 	if got, ok := h.CounterValue(context.Background(), "messaging.client.sent.messages", attribute.String("messaging.destination.name", "order.created.v1"), attribute.String("result", "success")); !ok || got != 1 {
 		t.Fatalf("sent counter = %d, %v", got, ok)
+	}
+}
+
+func TestPublishContextPropagatesAndInstrumentsSend(t *testing.T) {
+	h := obstest.New(t)
+	writer := &capturingMessageWriter{}
+	serializer := &contextSerializer{}
+	bus := &Bus{
+		opts:       testOfflineOptions(),
+		client:     writer,
+		serializer: serializer,
+		breaker:    gobreaker.NewCircuitBreaker(gobreaker.Settings{}),
+		obs:        newObservability(context.Background(), h),
+	}
+	ctx, parent := h.TracerProvider().Tracer("caller").Start(context.Background(), "caller")
+	if err := bus.PublishContext(ctx, orderCreated{OrderID: "order-1"}); err != nil {
+		t.Fatal(err)
+	}
+	parent.End()
+
+	spans := h.SpansByName("send order.created.v1")
+	if len(spans) != 1 || !obstest.ChildOf(h.SpansByName("caller")[0], spans[0]) {
+		t.Fatalf("send span hierarchy = %#v", spans)
+	}
+	if got := trace.SpanContextFromContext(serializer.serializeContext); got.SpanID() != spans[0].SpanContext().SpanID() {
+		t.Fatalf("serializer context parent = %s, want send span %s", got.SpanID(), spans[0].SpanContext().SpanID())
+	}
+	if len(writer.messages) != 1 || !hasHeader(writer.messages[0].Headers, "traceparent") {
+		t.Fatalf("published headers = %#v, want traceparent", writer.messages)
+	}
+	attrs := []attribute.KeyValue{attribute.String("messaging.destination.name", "order.created.v1"), attribute.String("result", "success")}
+	if got, ok := h.CounterValue(context.Background(), "messaging.client.sent.messages", attrs...); !ok || got != 1 {
+		t.Fatalf("sent metric = %d, %v", got, ok)
+	}
+}
+
+func TestProcessExtractsParentAndInstrumentsConsumer(t *testing.T) {
+	h := obstest.New(t)
+	serializer := &contextSerializer{}
+	parentCtx, send := h.TracerProvider().Tracer("producer").Start(context.Background(), "send orders")
+	record := kgo.Record{Topic: "orders", Value: []byte(`{}`)}
+	injectTraceWith(parentCtx, &record, h.Propagator())
+	send.End()
+
+	reader := &commitTrackingReader{}
+	bus := &Bus{opts: testOfflineOptions(), obs: newObservability(context.Background(), h)}
+	consumer := &Consumer[orderCreated]{
+		opts: bus.opts, bus: bus, client: reader, serializer: serializer, group: "orders",
+		handler: HandlerFunc[orderCreated](func(context.Context, orderCreated, Ctx) error { return nil }),
+	}
+	if err := consumer.processMessage(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+
+	process := h.SpansByName("process orders")
+	if len(process) != 1 || !obstest.ChildOf(h.SpansByName("send orders")[0], process[0]) {
+		t.Fatalf("process span hierarchy = %#v", process)
+	}
+	if got := trace.SpanContextFromContext(serializer.deserializeContext); got.SpanID() != process[0].SpanContext().SpanID() {
+		t.Fatalf("serializer context parent = %s, want process span %s", got.SpanID(), process[0].SpanContext().SpanID())
+	}
+	attrs := []attribute.KeyValue{attribute.String("messaging.destination.name", "orders"), attribute.String("result", "success")}
+	if got, ok := h.CounterValue(context.Background(), "messaging.client.consumed.messages", attrs...); !ok || got != 1 {
+		t.Fatalf("consumed metric = %d, %v", got, ok)
 	}
 }
 
@@ -283,6 +365,7 @@ func TestDLQTopic(t *testing.T) {
 }
 
 func TestDLQFailureDoesNotCommitOffset(t *testing.T) {
+	h := obstest.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	writer := &failingMessageWriter{cancel: cancel}
@@ -290,6 +373,7 @@ func TestDLQFailureDoesNotCommitOffset(t *testing.T) {
 	bus := &Bus{
 		opts:      testOfflineOptions(),
 		dlqWriter: writer,
+		obs:       newObservability(context.Background(), h),
 	}
 	consumer := &Consumer[orderCreated]{
 		opts:       bus.opts,
@@ -313,6 +397,9 @@ func TestDLQFailureDoesNotCommitOffset(t *testing.T) {
 	}
 	if reader.commits != 0 {
 		t.Fatalf("commits = %d, want 0 when DLQ fails", reader.commits)
+	}
+	if len(h.LogsBySeverity(log.SeverityError)) != 1 {
+		t.Fatalf("DLQ failure logs = %#v, want one error log", h.Logs())
 	}
 }
 
@@ -400,7 +487,7 @@ func TestNewLoadsEnvironmentWithInternalContext(t *testing.T) {
 	}
 	defer func() { _ = bus.Close() }()
 
-	if bus.baseCtx == nil {
+	if bus.legacyContext == nil || bus.legacyContext() == nil {
 		t.Fatal("New must create an internal base context")
 	}
 	if got := bus.opts.Brokers; len(got) != 1 || got[0] != "127.0.0.1:19092" {
@@ -457,16 +544,16 @@ func TestPrivateConstructorCapturesContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bus, err := newWithOptions(ctx, testOfflineOptions())
+	bus, err := newBusWithOptions(ctx, testOfflineOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = bus.Close() }()
-	if bus.baseCtx == nil {
-		t.Fatal("newWithOptions must capture the caller context as the Bus base context")
+	if bus.legacyContext == nil || bus.legacyContext() == nil {
+		t.Fatal("newBusWithOptions must capture the caller context as the Bus base context")
 	}
 	cancel()
-	if bus.baseCtx.Err() == nil {
-		t.Fatal("Bus base context must be derived from the ctx given at newWithOptions")
+	if bus.legacyContext().Err() == nil {
+		t.Fatal("Bus base context must be derived from the ctx given at newBusWithOptions")
 	}
 }

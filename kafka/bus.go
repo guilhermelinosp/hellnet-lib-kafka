@@ -18,17 +18,21 @@ type recordProducer interface {
 	Close()
 }
 
+type brokerPinger interface {
+	Ping(context.Context) error
+}
+
 // Bus is the message bus: an idempotent franz-go producer with a circuit
 // breaker, plus DLQ publishing. New/MustNew use the constructor context.
 type Bus struct {
-	opts       Options
-	client     *kgo.Client
-	dlqWriter  recordProducer
-	breaker    *gobreaker.CircuitBreaker
-	serializer Serializer
-	baseCtx    context.Context //nolint:containedctx // TODO(telemetry-fase-D): legacy wrapper retains construction context.
-	ops        telemetry.Client
-	obs        observability
+	opts          Options
+	client        recordProducer
+	dlqWriter     recordProducer
+	breaker       *gobreaker.CircuitBreaker
+	serializer    Serializer
+	legacyContext func() context.Context
+	ops           telemetry.Client
+	obs           observability
 }
 
 func newBus(ctx context.Context, opts Options) (*Bus, error) {
@@ -41,12 +45,12 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 		return nil, fmt.Errorf("kafka: create franz client: %w", err)
 	}
 	b := &Bus{
-		opts:       opts,
-		client:     client,
-		dlqWriter:  client,
-		serializer: opts.Serializer,
-		baseCtx:    ctx,
-		obs:        newObservability(nil), //nolint:contextcheck // constructor initializes providers.
+		opts:          opts,
+		client:        client,
+		dlqWriter:     client,
+		serializer:    opts.Serializer,
+		legacyContext: func() context.Context { return ctx },
+		obs:           newObservability(ctx, nil),
 	}
 	if b.serializer == nil {
 		b.serializer = JSONSerializer{}
@@ -63,14 +67,18 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 // Publish serializes msg and produces it using the construction context.
 // Deprecated: use PublishContext with the caller's request context.
 func (b *Bus) Publish(msg Message) error {
-	return b.PublishContext(b.baseCtx, msg)
+	return b.PublishContext(b.legacyContext(), msg)
 }
 
 // PublishContext serializes and produces msg as a child of ctx.
-func (b *Bus) PublishContext(ctx context.Context, msg Message) (err error) { //nolint:contextcheck // caller-owned context is intentionally the span parent.
+func (b *Bus) PublishContext(ctx context.Context, msg Message) error {
 	if ctx == nil {
-		ctx = context.Background() //nolint:contextcheck // nil compatibility fallback.
+		return fmt.Errorf("kafka: publish context is nil")
 	}
+	return b.publishWithContext(ctx, msg)
+}
+
+func (b *Bus) publishWithContext(ctx context.Context, msg Message) (err error) {
 	topic := TopicName(b.opts, msg.MessageType())
 	ctx, span := b.obs.tracer.Start(ctx, messaging.SendSpanName(topic),
 		trace.WithSpanKind(trace.SpanKindProducer),
@@ -87,7 +95,7 @@ func (b *Bus) PublishContext(ctx context.Context, msg Message) (err error) { //n
 		b.obs.observeSend(ctx, topic, result, started)
 	}()
 	publish := func(ctx context.Context) error {
-		payload, err := b.serializer.Serialize(topic, msg)
+		payload, err := serialize(ctx, b.serializer, topic, msg)
 		if err != nil {
 			return fmt.Errorf("kafka: serialize %s: %w", topic, err)
 		}
@@ -108,10 +116,12 @@ func (b *Bus) PublishContext(ctx context.Context, msg Message) (err error) { //n
 	return publish(ctx)
 }
 
+func backgroundContext() context.Context { return context.Background() }
+
 // PublishBatchContext publishes messages sequentially using ctx as the parent
 // of each producer operation. It stops at the first error, preserving the
 // existing at-least-once caller retry semantics without hiding partial work.
-func (b *Bus) PublishBatchContext(ctx context.Context, messages ...Message) error { //nolint:contextcheck // caller-owned context is intentionally the span parent.
+func (b *Bus) PublishBatchContext(ctx context.Context, messages ...Message) error {
 	for _, msg := range messages {
 		if msg == nil {
 			return fmt.Errorf("kafka: batch contains nil message")
@@ -156,7 +166,11 @@ func ctxOrNil(ctx context.Context) error {
 // Ping opens metadata and authentication paths through franz-go by issuing a
 // harmless metadata request for the configured broker set.
 func (b *Bus) Ping(ctx context.Context) error {
-	if err := b.client.Ping(ctx); err != nil {
+	pinger, ok := b.client.(brokerPinger)
+	if !ok {
+		return fmt.Errorf("kafka: client does not support ping")
+	}
+	if err := pinger.Ping(ctx); err != nil {
 		return fmt.Errorf("kafka: ping metadata/authentication: %w", err)
 	}
 	return nil

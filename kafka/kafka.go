@@ -112,11 +112,9 @@ func (o *Options) validate() error {
 
 // buildSerializer selects the serializer per DefaultSerializer ("json", "avro"
 // or "protobuf"). Avro and Protobuf require a Schema Registry URL
-// (hellnet-lib-schema). The ctx
-// becomes the registry client's base context: schema fetches derive their
-// timeout budget from it, so cancelling the ctx captured at construction also
-// aborts in-flight registry lookups.
-func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
+// (hellnet-lib-schema). Active operation contexts are passed at serialization
+// time through ContextSerializer rather than retained by the client.
+func (o *Options) buildSerializer() (Serializer, error) {
 	switch o.DefaultSerializer {
 	case "", "json":
 		return JSONSerializer{}, nil
@@ -124,12 +122,12 @@ func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
 		}
-		return &AvroSerializer{registry: newRegistryClientWithInstrumentation(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath, o.instrumentation)}, nil
+		return &AvroSerializer{registry: newRegistryClientWithInstrumentation(o.SchemaRegistryURL, o.SchemaRegistryPath, o.instrumentation)}, nil
 	case "protobuf":
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
 		}
-		return &ProtobufSerializer{registry: newRegistryClientWithInstrumentation(baseCtx, o.SchemaRegistryURL, o.SchemaRegistryPath, o.instrumentation)}, nil
+		return &ProtobufSerializer{registry: newRegistryClientWithInstrumentation(o.SchemaRegistryURL, o.SchemaRegistryPath, o.instrumentation)}, nil
 	default:
 		return nil, fmt.Errorf("kafka: unsupported KAFKA_DEFAULT_SERIALIZER %q", o.DefaultSerializer)
 	}
@@ -189,7 +187,7 @@ func New(ctx context.Context, ops telemetry.Client, options ...Option) (*Bus, er
 		return nil, err
 	}
 	b.ops = ops
-	b.obs = newObservability(config.inst) //nolint:contextcheck // constructor initializes providers.
+	b.obs = newObservability(ctx, config.inst)
 	return b, nil
 }
 
@@ -200,18 +198,11 @@ func legacyInstrumentation(ops telemetry.Client) instrument.Instrumentation {
 	return nil
 }
 
-func newWithOptions(ctx context.Context, opts Options) (*Bus, error) { //nolint:contextcheck // TODO(telemetry-fase-D): legacy constructor context.
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return newBusWithOptions(ctx, opts)
-}
-
 func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	s, err := o.buildSerializer(ctx)
+	s, err := o.buildSerializer()
 	if err != nil {
 		return nil, err
 	}

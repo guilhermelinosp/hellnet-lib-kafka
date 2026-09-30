@@ -77,7 +77,7 @@ func newProducerWithOptions[T Message](ctx context.Context, o Options) (*Produce
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	s, err := o.buildSerializer(ctx)
+	s, err := o.buildSerializer()
 	if err != nil {
 		return nil, err
 	}
@@ -100,10 +100,8 @@ func newConsumerWithOptions[T Message](ctx context.Context, h Handler[T], spec H
 	if err != nil {
 		return nil, err
 	}
-	runCtx, cancelRun := context.WithCancel(bus.baseCtx)
-	c := &Consumer[T]{opts: bus.opts, bus: bus, serializer: bus.serializer, runCtx: runCtx, cancelRun: cancelRun}
+	c := &Consumer[T]{opts: bus.opts, bus: bus, serializer: bus.serializer}
 	if err := c.Configure(h, spec); err != nil {
-		cancelRun()
 		_ = bus.Close()
 		return nil, err
 	}

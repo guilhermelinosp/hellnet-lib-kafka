@@ -355,7 +355,8 @@ Passe `*telemetry.Telemetry` pelo contrato:
 bus, err := kafka.New(ctx, nil, kafka.WithInstrumentation(tel))
 ```
 
-`PublishContext` cria `send {topic}` e o consumer cria `process {topic}`.
+`PublishContext` cria `send {topic}` como filho do contexto ativo; o consumer
+extrai os headers W3C e cria `process {topic}` como filho remoto do `send`.
 `PublishBatchContext` mantém um span por mensagem; `Shutdown(ctx)` deve ser
 preferido a `Close()` para encerramento coordenado.
 Propagação usa headers W3C em minúsculo. Métricas: 
@@ -363,7 +364,11 @@ Propagação usa headers W3C em minúsculo. Métricas:
 `messaging.client.operation.duration` e `messaging.process.duration` (`s`).
 Logs de retry de fetch e DLQ usam o logger do contrato.
 Chamadas HTTP ao Schema Registry usam `otelhttp` com o tracer provider do
-contrato.
+contrato. Para Avro e Protobuf, as requisições iniciadas durante
+`PublishContext` ou processamento do consumer herdam o contexto ativo (e são
+filhas de `send` ou `process`); serializadores personalizados continuam
+compatíveis com `Serializer` e podem implementar opcionalmente
+`ContextSerializer` para receber esse contexto.
 
 ## Licença
 

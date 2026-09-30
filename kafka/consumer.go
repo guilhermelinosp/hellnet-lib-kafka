@@ -33,8 +33,6 @@ type Consumer[T Message] struct {
 	topic      string
 	group      string
 	maxRetries int
-	runCtx     context.Context //nolint:containedctx // TODO(telemetry-fase-D): legacy wrapper retains construction context.
-	cancelRun  context.CancelFunc
 }
 
 // NewConsumer creates a consumer with the caller's context and telemetry.
@@ -46,13 +44,10 @@ func NewConsumer[T Message](ctx context.Context, ops telemetry.Client, options .
 	if err != nil {
 		return nil, err
 	}
-	runCtx, cancelRun := context.WithCancel(bus.baseCtx) // #nosec G118 -- cancelRun is stored and invoked by Close.
 	return &Consumer[T]{
 		opts:       bus.opts,
 		bus:        bus,
 		serializer: bus.serializer,
-		runCtx:     runCtx,
-		cancelRun:  cancelRun,
 	}, nil
 }
 
@@ -111,24 +106,20 @@ func (c *Consumer[T]) Run() error {
 	if c.client == nil {
 		return fmt.Errorf("kafka: consumer is not configured; call Configure first")
 	}
-	return c.run(c.runCtx)
+	return c.runWithoutContext()
 }
 
-// RunContext consumes with an additional caller-owned cancellation boundary.
+func (c *Consumer[T]) runWithoutContext() error { return c.run(backgroundContext()) }
+
+// RunContext consumes until the caller cancels ctx or Close closes the client.
 func (c *Consumer[T]) RunContext(ctx context.Context) error {
 	if c.client == nil {
 		return fmt.Errorf("kafka: consumer is not configured; call Configure first")
 	}
 	if ctx == nil {
-		return c.Run()
+		return c.runWithoutContext()
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(c.runCtx, cancel) //nolint:contextcheck // TODO(telemetry-fase-D): legacy stored context.
-	defer func() {
-		stop()
-		cancel()
-	}()
-	return c.run(runCtx)
+	return c.run(ctx)
 }
 
 func (c *Consumer[T]) run(ctx context.Context) error {
@@ -163,7 +154,7 @@ func (c *Consumer[T]) run(ctx context.Context) error {
 }
 
 func (c *Consumer[T]) processMessage(ctx context.Context, m kgo.Record) (err error) {
-	obs := newObservability(nil) //nolint:contextcheck // test/fallback consumer without a configured bus.
+	obs := newObservability(ctx, nil)
 	if c.bus != nil && c.bus.obs.inst != nil {
 		obs = c.bus.obs
 	}
@@ -192,7 +183,7 @@ func (c *Consumer[T]) processMessageBody(ctx context.Context, m kgo.Record) erro
 		msg = reflect.New(t.Elem()).Interface().(T)
 		out = any(msg)
 	}
-	if err := c.serializer.Deserialize(m.Topic, m.Value, out); err != nil {
+	if err := deserialize(ctx, c.serializer, m.Topic, m.Value, out); err != nil {
 		if !c.publishDLQWithRetry(ctx, m, "deserialize: "+err.Error(), "deserialize") {
 			return nil
 		}
@@ -272,7 +263,6 @@ func isCtxErr(err error) bool {
 
 // Close cancels consumption and releases the franz-go clients.
 func (c *Consumer[T]) Close() error {
-	c.cancelRun()
 	if c.client != nil {
 		c.client.Close()
 	}

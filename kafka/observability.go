@@ -25,7 +25,7 @@ type observability struct {
 	processDuration   metric.Float64Histogram
 }
 
-func newObservability(inst instrument.Instrumentation) observability {
+func newObservability(ctx context.Context, inst instrument.Instrumentation) observability {
 	if inst == nil {
 		inst = instrument.Noop()
 	}
@@ -34,22 +34,22 @@ func newObservability(inst instrument.Instrumentation) observability {
 	meter := inst.MeterProvider().Meter(instrumentationScope, metric.WithInstrumentationVersion(version))
 	sent, err := meter.Int64Counter("messaging.client.sent.messages")
 	if err != nil {
-		logger.Error(context.TODO(), "kafka metric creation failed", "metric", "messaging.client.sent.messages", "error", err)
+		logger.Error(ctx, "kafka metric creation failed", "metric", "messaging.client.sent.messages", "error", err)
 		sent, _ = metricnoop.NewMeterProvider().Meter(instrumentationScope).Int64Counter("messaging.client.sent.messages")
 	}
 	consumed, err := meter.Int64Counter("messaging.client.consumed.messages")
 	if err != nil {
-		logger.Error(context.TODO(), "kafka metric creation failed", "metric", "messaging.client.consumed.messages", "error", err)
+		logger.Error(ctx, "kafka metric creation failed", "metric", "messaging.client.consumed.messages", "error", err)
 		consumed, _ = metricnoop.NewMeterProvider().Meter(instrumentationScope).Int64Counter("messaging.client.consumed.messages")
 	}
 	operationDuration, err := meter.Float64Histogram("messaging.client.operation.duration", metric.WithUnit("s"))
 	if err != nil {
-		logger.Error(context.TODO(), "kafka metric creation failed", "metric", "messaging.client.operation.duration", "error", err)
+		logger.Error(ctx, "kafka metric creation failed", "metric", "messaging.client.operation.duration", "error", err)
 		operationDuration, _ = metricnoop.NewMeterProvider().Meter(instrumentationScope).Float64Histogram("messaging.client.operation.duration")
 	}
 	processDuration, err := meter.Float64Histogram("messaging.process.duration", metric.WithUnit("s"))
 	if err != nil {
-		logger.Error(context.TODO(), "kafka metric creation failed", "metric", "messaging.process.duration", "error", err)
+		logger.Error(ctx, "kafka metric creation failed", "metric", "messaging.process.duration", "error", err)
 		processDuration, _ = metricnoop.NewMeterProvider().Meter(instrumentationScope).Float64Histogram("messaging.process.duration")
 	}
 	return observability{

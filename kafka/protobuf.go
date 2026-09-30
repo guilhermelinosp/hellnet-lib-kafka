@@ -21,24 +21,30 @@ type ProtobufSerializer struct {
 }
 
 // NewProtobufSerializer builds a Protobuf serializer bound to the registry URL.
-// Standalone use: fetches derive from context.Background(). When built through
-// New/NewConsumer (buildSerializer), the registry client instead derives from
-// the context captured once at construction.
 func NewProtobufSerializer(url, path string) (*ProtobufSerializer, error) {
 	if url == "" {
 		return nil, fmt.Errorf("kafka: schema registry URL is empty")
 	}
-	return &ProtobufSerializer{registry: newRegistryClient(context.Background(), url, path)}, nil
+	return &ProtobufSerializer{registry: newRegistryClient(url, path)}, nil
 }
 
 // Serialize encodes a proto.Message and prepends the Confluent wire header.
 func (p *ProtobufSerializer) Serialize(topic string, value any) ([]byte, error) {
+	return p.SerializeContext(context.Background(), topic, value)
+}
+
+// SerializeContext encodes value using a schema lookup derived from ctx.
+func (p *ProtobufSerializer) SerializeContext(ctx context.Context, topic string, value any) ([]byte, error) {
+	return p.serialize(ctx, topic, value)
+}
+
+func (p *ProtobufSerializer) serialize(ctx context.Context, topic string, value any) ([]byte, error) {
 	m, ok := value.(proto.Message)
 	if !ok {
 		return nil, fmt.Errorf("kafka: protobuf: value must implement proto.Message, got %T", value)
 	}
 	subject := topic + "-value"
-	_, id, err := p.registry.latestSchema(subject)
+	_, id, err := p.registry.latestSchemaContext(ctx, subject)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: protobuf schema %s: %w", subject, err)
 	}
@@ -59,6 +65,15 @@ func (p *ProtobufSerializer) Serialize(topic string, value any) ([]byte, error) 
 // Deserialize decodes a Confluent wire-format payload into out (a
 // proto.Message), resolving the schema id through the registry.
 func (p *ProtobufSerializer) Deserialize(_ string, data []byte, out any) error {
+	return p.DeserializeContext(context.Background(), "", data, out)
+}
+
+// DeserializeContext decodes data using a schema lookup derived from ctx.
+func (p *ProtobufSerializer) DeserializeContext(ctx context.Context, _ string, data []byte, out any) error {
+	return p.deserialize(ctx, data, out)
+}
+
+func (p *ProtobufSerializer) deserialize(ctx context.Context, data []byte, out any) error {
 	if len(data) < 5 || data[0] != 0 {
 		return fmt.Errorf("kafka: invalid confluent protobuf wire format")
 	}
@@ -67,7 +82,8 @@ func (p *ProtobufSerializer) Deserialize(_ string, data []byte, out any) error {
 		return fmt.Errorf("kafka: protobuf: out must implement proto.Message, got %T", out)
 	}
 	id := binary.BigEndian.Uint32(data[1:5])
-	if _, err := p.registry.schemaByID(int(id)); err != nil {
+	_, err := p.registry.schemaByIDContext(ctx, int(id))
+	if err != nil {
 		return fmt.Errorf("kafka: protobuf schema id %d: %w", id, err)
 	}
 	return proto.Unmarshal(data[5:], m)

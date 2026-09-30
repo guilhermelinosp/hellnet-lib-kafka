@@ -8,7 +8,7 @@ import (
 func TestBuildSerializerJSON(t *testing.T) {
 	o := testDefaultOptions()
 	o.DefaultSerializer = "json"
-	s, err := o.buildSerializer(context.Background())
+	s, err := o.buildSerializer()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,11 +20,11 @@ func TestBuildSerializerJSON(t *testing.T) {
 func TestBuildSerializerAvro(t *testing.T) {
 	o := testDefaultOptions()
 	o.DefaultSerializer = "avro"
-	if _, err := o.buildSerializer(context.Background()); err == nil {
+	if _, err := o.buildSerializer(); err == nil {
 		t.Fatal("expected error without SchemaRegistryURL")
 	}
 	o.SchemaRegistryURL = "http://localhost:8085"
-	s, err := o.buildSerializer(context.Background())
+	s, err := o.buildSerializer()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,11 +36,11 @@ func TestBuildSerializerAvro(t *testing.T) {
 func TestBuildSerializerProtobuf(t *testing.T) {
 	o := testDefaultOptions()
 	o.DefaultSerializer = "protobuf"
-	if _, err := o.buildSerializer(context.Background()); err == nil {
+	if _, err := o.buildSerializer(); err == nil {
 		t.Fatal("expected error without SchemaRegistryURL")
 	}
 	o.SchemaRegistryURL = "http://localhost:8085"
-	s, err := o.buildSerializer(context.Background())
+	s, err := o.buildSerializer()
 	if err != nil {
 		t.Fatal(err)
 	}

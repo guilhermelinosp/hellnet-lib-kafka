@@ -63,19 +63,6 @@ linters:
       - "_test\\.go$"
       - "^_examples/"
       - "internal/obstest/"
-    rules:
-      # TODO(telemetry-fase-D): remove after context-first producer and consumer paths land.
-      - path: "kafka/bus.go"
-        linters: [containedctx]
-      - path: "kafka/consumer.go"
-        linters: [containedctx, contextcheck, depguard, forbidigo]
-      - path: "kafka/kafka.go"
-        linters: [contextcheck]
-      - path: "kafka/registry.go"
-        linters: [containedctx]
-      # TODO(telemetry-fase-C): remove after contract propagator replacement.
-      - path: "kafka/trace.go"
-        linters: [forbidigo]
 
 formatters:
   enable:
