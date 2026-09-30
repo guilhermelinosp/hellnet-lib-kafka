@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/guilhermelinosp/hellnet-lib-kafka/internal/obstest"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/sony/gobreaker"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
@@ -106,7 +106,7 @@ func TestTopicName(t *testing.T) {
 }
 
 func TestSendMetricIsRecorded(t *testing.T) {
-	h := obstest.New(t)
+	h := telemetry.NewHarness(t)
 	obs := newObservability(context.Background(), h)
 	ctx, parent := h.TracerProvider().Tracer("caller").Start(context.Background(), "caller")
 	_, span := obs.tracer.Start(ctx, "send order.created.v1")
@@ -119,7 +119,7 @@ func TestSendMetricIsRecorded(t *testing.T) {
 }
 
 func TestPublishContextPropagatesAndInstrumentsSend(t *testing.T) {
-	h := obstest.New(t)
+	h := telemetry.NewHarness(t)
 	writer := &capturingMessageWriter{}
 	serializer := &contextSerializer{}
 	bus := &Bus{
@@ -136,7 +136,7 @@ func TestPublishContextPropagatesAndInstrumentsSend(t *testing.T) {
 	parent.End()
 
 	spans := h.SpansByName("send order.created.v1")
-	if len(spans) != 1 || !obstest.ChildOf(h.SpansByName("caller")[0], spans[0]) {
+	if len(spans) != 1 || !telemetry.ChildOf(h.SpansByName("caller")[0], spans[0]) {
 		t.Fatalf("send span hierarchy = %#v", spans)
 	}
 	if got := trace.SpanContextFromContext(serializer.serializeContext); got.SpanID() != spans[0].SpanContext().SpanID() {
@@ -152,7 +152,7 @@ func TestPublishContextPropagatesAndInstrumentsSend(t *testing.T) {
 }
 
 func TestProcessExtractsParentAndInstrumentsConsumer(t *testing.T) {
-	h := obstest.New(t)
+	h := telemetry.NewHarness(t)
 	serializer := &contextSerializer{}
 	parentCtx, send := h.TracerProvider().Tracer("producer").Start(context.Background(), "send orders")
 	record := kgo.Record{Topic: "orders", Value: []byte(`{}`)}
@@ -170,7 +170,7 @@ func TestProcessExtractsParentAndInstrumentsConsumer(t *testing.T) {
 	}
 
 	process := h.SpansByName("process orders")
-	if len(process) != 1 || !obstest.ChildOf(h.SpansByName("send orders")[0], process[0]) {
+	if len(process) != 1 || !telemetry.ChildOf(h.SpansByName("send orders")[0], process[0]) {
 		t.Fatalf("process span hierarchy = %#v", process)
 	}
 	if got := trace.SpanContextFromContext(serializer.deserializeContext); got.SpanID() != process[0].SpanContext().SpanID() {
@@ -365,7 +365,7 @@ func TestDLQTopic(t *testing.T) {
 }
 
 func TestDLQFailureDoesNotCommitOffset(t *testing.T) {
-	h := obstest.New(t)
+	h := telemetry.NewHarness(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	writer := &failingMessageWriter{cancel: cancel}
