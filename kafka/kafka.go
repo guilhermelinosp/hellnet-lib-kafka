@@ -140,7 +140,7 @@ func (o *Options) buildSerializer(baseCtx context.Context) (Serializer, error) {
 func New(ctx context.Context, ops telemetry.Client) (*Bus, error) {
 	// Env-first: load .env before reading KAFKA_* variables. Best
 	// effort: without a file (or with a parse error), process env still applies.
-	_ = env.LoadDotEnv()
+	_ = env.Environment()
 
 	o := Options{
 		Brokers:               splitBrokers(kafkaEnv("BROKERS", "")),
