@@ -146,7 +146,8 @@ func WithInstrumentation(inst instrument.Instrumentation) Option {
 
 // New creates a bus from KAFKA_* environment variables. inst is the Hellnet
 // observability contract (for example a *telemetry.Telemetry, or nil to emit no
-// telemetry); options may refine it.
+// telemetry; a nil pointer such as a nil *telemetry.Telemetry is treated the
+// same way); options may refine it.
 func New(ctx context.Context, inst instrument.Instrumentation, options ...Option) (*Bus, error) {
 	return NewWithOptions(ctx, append([]Option{WithInstrumentation(inst)}, options...)...)
 }
@@ -188,6 +189,7 @@ func NewWithOptions(ctx context.Context, options ...Option) (*Bus, error) {
 			option(&config)
 		}
 	}
+	config.inst = instrument.Resolve(config.inst)
 	o.instrumentation = config.inst
 	b, err := newBusWithOptions(ctx, o)
 	if err != nil {
