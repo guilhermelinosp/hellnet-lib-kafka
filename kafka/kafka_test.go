@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guilhermelinosp/hellnet-lib-kafka/internal/obstest"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -85,6 +87,27 @@ func TestTopicName(t *testing.T) {
 	}
 }
 
+func TestSendMetricIsRecorded(t *testing.T) {
+	h := obstest.New(t)
+	obs := newObservability(h)
+	ctx, parent := h.TracerProvider().Tracer("caller").Start(context.Background(), "caller")
+	_, span := obs.tracer.Start(ctx, "send order.created.v1")
+	obs.observeSend(ctx, "order.created.v1", "success", time.Now())
+	span.End()
+	parent.End()
+	if got, ok := h.CounterValue(context.Background(), "messaging.client.sent.messages", attribute.String("messaging.destination.name", "order.created.v1"), attribute.String("result", "success")); !ok || got != 1 {
+		t.Fatalf("sent counter = %d, %v", got, ok)
+	}
+}
+
+func TestShutdownHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := (&Bus{}).Shutdown(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown error = %v, want context canceled", err)
+	}
+}
+
 func TestHandlerSpecResolve(t *testing.T) {
 	o := testDefaultOptions()
 	spec := HandlerSpec{}
@@ -113,10 +136,23 @@ func TestTraceContextRoundTripThroughHeaders(t *testing.T) {
 	message := kgo.Record{}
 
 	injectTrace(ctx, &message)
+	if len(message.Headers) == 0 || message.Headers[0].Key != "traceparent" {
+		t.Fatalf("trace headers = %#v, want lower-case traceparent", message.Headers)
+	}
 	got := trace.SpanContextFromContext(extractTrace(context.Background(), message))
 
 	if got.TraceID() != traceID || got.SpanID() != spanID || !got.IsSampled() {
 		t.Fatalf("trace context = %s/%s sampled=%t, want %s/%s sampled=true", got.TraceID(), got.SpanID(), got.IsSampled(), traceID, spanID)
+	}
+}
+
+func TestTraceContextAcceptsLowerCaseForeignHeader(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
+	spanID, _ := trace.SpanIDFromHex("0102030405060708")
+	message := kgo.Record{Headers: []kgo.RecordHeader{{Key: "traceparent", Value: []byte("00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01")}}}
+	got := trace.SpanContextFromContext(extractTrace(context.Background(), message))
+	if got.TraceID() != traceID || got.SpanID() != spanID {
+		t.Fatalf("trace context = %s/%s, want %s/%s", got.TraceID(), got.SpanID(), traceID, spanID)
 	}
 }
 

@@ -10,6 +10,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func urlPathEscape(s string) string {
@@ -39,14 +42,22 @@ type registryClient struct {
 	// baseCtx is captured once at construction (the bus/base ctx when built
 	// through New/NewConsumer); every fetch derives its timeout from it.
 	// nil means standalone use: Background.
-	baseCtx context.Context
+	baseCtx context.Context //nolint:containedctx // TODO(telemetry-fase-D): legacy wrapper retains construction context.
 }
 
 func newRegistryClient(baseCtx context.Context, url, path string) *registryClient {
+	return newRegistryClientWithInstrumentation(baseCtx, url, path, nil)
+}
+
+func newRegistryClientWithInstrumentation(baseCtx context.Context, url, path string, inst instrument.Instrumentation) *registryClient {
+	transport := http.DefaultTransport
+	if inst != nil {
+		transport = otelhttp.NewTransport(transport, otelhttp.WithTracerProvider(inst.TracerProvider()))
+	}
 	return &registryClient{
 		base:    strings.TrimSuffix(url, "/"),
 		path:    strings.TrimSuffix(path, "/"),
-		http:    &http.Client{},
+		http:    &http.Client{Transport: transport},
 		timeout: 10 * time.Second,
 		baseCtx: baseCtx,
 	}

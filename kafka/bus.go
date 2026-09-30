@@ -3,10 +3,14 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/messaging"
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/sony/gobreaker"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type recordProducer interface {
@@ -22,8 +26,9 @@ type Bus struct {
 	dlqWriter  recordProducer
 	breaker    *gobreaker.CircuitBreaker
 	serializer Serializer
-	baseCtx    context.Context
+	baseCtx    context.Context //nolint:containedctx // TODO(telemetry-fase-D): legacy wrapper retains construction context.
 	ops        telemetry.Client
+	obs        observability
 }
 
 func newBus(ctx context.Context, opts Options) (*Bus, error) {
@@ -41,6 +46,7 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 		dlqWriter:  client,
 		serializer: opts.Serializer,
 		baseCtx:    ctx,
+		obs:        newObservability(nil), //nolint:contextcheck // constructor initializes providers.
 	}
 	if b.serializer == nil {
 		b.serializer = JSONSerializer{}
@@ -54,16 +60,39 @@ func newBus(ctx context.Context, opts Options) (*Bus, error) {
 	return b, nil
 }
 
-// Publish serializes msg and produces it to "{prefix}.{messageType}".
+// Publish serializes msg and produces it using the construction context.
+// Deprecated: use PublishContext with the caller's request context.
 func (b *Bus) Publish(msg Message) error {
+	return b.PublishContext(b.baseCtx, msg)
+}
+
+// PublishContext serializes and produces msg as a child of ctx.
+func (b *Bus) PublishContext(ctx context.Context, msg Message) (err error) { //nolint:contextcheck // caller-owned context is intentionally the span parent.
+	if ctx == nil {
+		ctx = context.Background() //nolint:contextcheck // nil compatibility fallback.
+	}
 	topic := TopicName(b.opts, msg.MessageType())
+	ctx, span := b.obs.tracer.Start(ctx, messaging.SendSpanName(topic),
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(messaging.System("kafka"), messaging.DestinationName(topic), messaging.OperationType("send"), messaging.OperationName("publish")))
+	defer span.End()
+	started := time.Now()
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		b.obs.observeSend(ctx, topic, result, started)
+	}()
 	publish := func(ctx context.Context) error {
 		payload, err := b.serializer.Serialize(topic, msg)
 		if err != nil {
 			return fmt.Errorf("kafka: serialize %s: %w", topic, err)
 		}
 		record := &kgo.Record{Topic: topic, Value: payload}
-		injectTrace(ctx, record)
+		injectTraceWith(ctx, record, b.obs.inst.Propagator())
 		_, err = b.breaker.Execute(func() (any, error) {
 			results := b.client.ProduceSync(ctx, record)
 			if err := results.FirstErr(); err != nil {
@@ -76,18 +105,51 @@ func (b *Bus) Publish(msg Message) error {
 		}
 		return nil
 	}
-	if b.ops != nil {
-		return b.ops.Trace(b.baseCtx).Span("kafka.publish", publish)
+	return publish(ctx)
+}
+
+// PublishBatchContext publishes messages sequentially using ctx as the parent
+// of each producer operation. It stops at the first error, preserving the
+// existing at-least-once caller retry semantics without hiding partial work.
+func (b *Bus) PublishBatchContext(ctx context.Context, messages ...Message) error { //nolint:contextcheck // caller-owned context is intentionally the span parent.
+	for _, msg := range messages {
+		if msg == nil {
+			return fmt.Errorf("kafka: batch contains nil message")
+		}
+		if err := b.PublishContext(ctx, msg); err != nil {
+			return err
+		}
 	}
-	return publish(b.baseCtx)
+	return nil
 }
 
 // Close releases the franz-go producer client.
+// Deprecated: use Shutdown with a caller-owned context.
 func (b *Bus) Close() error {
 	if b.client == nil {
 		return nil
 	}
 	b.client.Close()
+	return nil
+}
+
+// Shutdown releases the producer client unless ctx has already been canceled.
+// franz-go's Close is synchronous and has no context-aware variant.
+func (b *Bus) Shutdown(ctx context.Context) error {
+	if err := ctxOrNil(ctx); err != nil {
+		return err
+	}
+	if b.client == nil {
+		return nil
+	}
+	b.client.Close()
+	return nil
+}
+
+func ctxOrNil(ctx context.Context) error {
+	if ctx != nil {
+		return ctx.Err()
+	}
 	return nil
 }
 

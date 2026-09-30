@@ -335,8 +335,8 @@ Cobertura do suite:
 `TestIntegrationPublishConsume` (publish/consume end-to-end com ctx capturado
 uma vez), `TestIntegrationHandlerRetryThenDLQ` (retry esgota → DLQ) e
 `TestIntegrationCloseCancelsRun` (`Close()` cancela `Run()` cooperativamente).
-O mesmo suite roda no CI (`.github/workflows/integration.yml`) contra um
-service container Redpanda (`localhost:9092`).
+Esses testes permanecem locais, protegidos por build tag e variáveis de
+ambiente; a biblioteca não cria workflow de integração no CI.
 
 ## Gotchas / lições
 
@@ -346,6 +346,24 @@ service container Redpanda (`localhost:9092`).
 - Protobuf: use `T` ponteiro + mensagem embutida por valor (evita copylocks do `go vet`).
 - SR **efêmero** (Redpanda sem PVC): schemas zeram no restart do pod — registre com
   `~/cluster/redpanda-register-schemas.sh` (ou adicione PVC).
+
+## Observabilidade
+
+Passe `*telemetry.Telemetry` pelo contrato:
+
+```go
+bus, err := kafka.New(ctx, nil, kafka.WithInstrumentation(tel))
+```
+
+`PublishContext` cria `send {topic}` e o consumer cria `process {topic}`.
+`PublishBatchContext` mantém um span por mensagem; `Shutdown(ctx)` deve ser
+preferido a `Close()` para encerramento coordenado.
+Propagação usa headers W3C em minúsculo. Métricas: 
+`messaging.client.sent.messages`, `messaging.client.consumed.messages`,
+`messaging.client.operation.duration` e `messaging.process.duration` (`s`).
+Logs de retry de fetch e DLQ usam o logger do contrato.
+Chamadas HTTP ao Schema Registry usam `otelhttp` com o tracer provider do
+contrato.
 
 ## Licença
 
