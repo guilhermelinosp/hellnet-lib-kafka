@@ -100,6 +100,7 @@ func (b *Bus) publishWithContext(ctx context.Context, msg Message) (err error) {
 		}
 		record := &kgo.Record{Topic: topic, Value: payload}
 		injectTraceWith(ctx, record, b.obs.inst.Propagator())
+		injectHeaders(ctx, record)
 		_, err = b.breaker.Execute(func() (any, error) {
 			results := b.client.ProduceSync(ctx, record)
 			if err := results.FirstErr(); err != nil {

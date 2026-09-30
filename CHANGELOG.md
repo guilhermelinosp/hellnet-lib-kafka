@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added `ContextWithHeaders(ctx, headers)`: `PublishContext` sends the headers
+  carried by the context as Kafka record headers (correlation data such as
+  `event_id` or `order_id`); trace-context headers stay library-owned.
+- Added `Ctx.Headers`: handlers receive the record headers.
+
 - `New` resolves its instrumentation with `instrument.Resolve`: a nil value or a nil pointer
   (for example a nil `*telemetry.Telemetry`) disables telemetry instead of panicking.
 

@@ -166,6 +166,19 @@ prod.PublishContext(ctx, msg)     // span send filho do ctx do chamador (timeout
 prod.Shutdown(ctx)
 ```
 
+### Headers de correlação
+
+Dados de correlação (ex.: `event_id`, `order_id`) viajam nos **headers** do
+record Kafka, junto com o `traceparent` que a lib já propaga:
+
+```go
+ctx = kafka.ContextWithHeaders(ctx, map[string]string{"event_id": id, "order_id": orderID})
+prod.PublishContext(ctx, msg) // headers anexados ao record
+```
+
+O handler lê `kctx.Headers["order_id"]` (`kafka.Ctx.Headers`). `traceparent`,
+`tracestate` e `baggage` são da lib e ignorados em `ContextWithHeaders`.
+
 ### Consumer[T]
 
 ```go

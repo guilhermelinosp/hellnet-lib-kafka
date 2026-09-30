@@ -251,6 +251,7 @@ func (c *Consumer[T]) handle(ctx context.Context, msg T, m kgo.Record) error {
 			Partition: int(m.Partition),
 			Offset:    m.Offset,
 			Key:       m.Key,
+			Headers:   recordHeaders(m),
 		})
 	}
 	return fn(ctx)
