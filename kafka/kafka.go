@@ -146,8 +146,21 @@ func WithInstrumentation(inst instrument.Instrumentation) Option {
 }
 
 // New creates a bus. The telemetry.Client parameter is retained for compatibility.
-// Deprecated: pass WithInstrumentation and use the instrument contract.
+//
+// Deprecated: use NewWithOptions with WithInstrumentation.
 func New(ctx context.Context, ops telemetry.Client, options ...Option) (*Bus, error) {
+	b, err := NewWithOptions(ctx, append([]Option{WithInstrumentation(legacyInstrumentation(ops))}, options...)...)
+	if err != nil {
+		return nil, err
+	}
+	b.ops = ops
+	return b, nil
+}
+
+// NewWithOptions creates a bus from KAFKA_* environment variables. Supply the
+// Hellnet observability contract with WithInstrumentation; without it the bus
+// emits no telemetry.
+func NewWithOptions(ctx context.Context, options ...Option) (*Bus, error) {
 	// Env-first: load .env before reading KAFKA_* variables. Best
 	// effort: without a file (or with a parse error), process env still applies.
 	_ = env.Environment()
@@ -175,7 +188,7 @@ func New(ctx context.Context, ops telemetry.Client, options ...Option) (*Bus, er
 	if o.SchemaRegistryPath == "none" || o.SchemaRegistryPath == "/" {
 		o.SchemaRegistryPath = ""
 	}
-	config := constructorOptions{inst: legacyInstrumentation(ops)}
+	var config constructorOptions
 	for _, option := range options {
 		if option != nil {
 			option(&config)
@@ -186,7 +199,6 @@ func New(ctx context.Context, ops telemetry.Client, options ...Option) (*Bus, er
 	if err != nil {
 		return nil, err
 	}
-	b.ops = ops
 	b.obs = newObservability(ctx, config.inst)
 	return b, nil
 }
@@ -212,6 +224,7 @@ func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 
 // MustNew is like New but panics if construction fails.
 // MustNew is like New but panics if construction fails.
+//
 // Deprecated: pass WithInstrumentation to New.
 func MustNew(ctx context.Context, ops telemetry.Client, options ...Option) *Bus {
 	b, err := New(ctx, ops, options...)

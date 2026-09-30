@@ -38,17 +38,32 @@ type Consumer[T Message] struct {
 // NewConsumer creates a consumer with the caller's context and telemetry.
 // Configure must be called before Run to attach the handler and topic/group.
 // NewConsumer creates a consumer.
-// Deprecated: pass WithInstrumentation and use the instrument contract.
+//
+// Deprecated: use NewConsumerWithOptions with WithInstrumentation.
 func NewConsumer[T Message](ctx context.Context, ops telemetry.Client, options ...Option) (*Consumer[T], error) {
 	bus, err := New(ctx, ops, options...)
 	if err != nil {
 		return nil, err
 	}
+	return newConsumer[T](bus), nil
+}
+
+// NewConsumerWithOptions creates a consumer from KAFKA_* environment variables.
+// Supply the Hellnet observability contract with WithInstrumentation.
+func NewConsumerWithOptions[T Message](ctx context.Context, options ...Option) (*Consumer[T], error) {
+	bus, err := NewWithOptions(ctx, options...)
+	if err != nil {
+		return nil, err
+	}
+	return newConsumer[T](bus), nil
+}
+
+func newConsumer[T Message](bus *Bus) *Consumer[T] {
 	return &Consumer[T]{
 		opts:       bus.opts,
 		bus:        bus,
 		serializer: bus.serializer,
-	}, nil
+	}
 }
 
 // Configure attaches the handler and resolves the topic and consumer group.

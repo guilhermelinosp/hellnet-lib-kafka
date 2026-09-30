@@ -123,17 +123,18 @@ func main() {
 	defer stop()
 
 	// Producer tipado pelo tipo da mensagem (env-first; lê KAFKA_* via .env).
-	prod, err := kafka.NewProducer[orderCreated](ctx, nil)
+	// Passe kafka.WithInstrumentation(tel) para ativar traces/métricas/logs.
+	prod, err := kafka.NewProducerWithOptions[orderCreated](ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer prod.Close()
-	if err := prod.Publish(orderCreated{OrderID: "123", Total: 99.90}); err != nil {
+	defer func() { _ = prod.Shutdown(context.Background()) }()
+	if err := prod.PublishContext(ctx, orderCreated{OrderID: "123", Total: 99.90}); err != nil {
 		log.Fatal(err)
 	}
 
 	// Consumer tipado pelo handler (env-first; opts opcionais).
-	cons, err := kafka.NewConsumer[orderCreated](ctx, nil)
+	cons, err := kafka.NewConsumerWithOptions[orderCreated](ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -160,9 +161,9 @@ Use `HandlerSpec.Topic` para sobrescrever.
 ### Producer[T]
 
 ```go
-prod, _ := kafka.NewProducer[orderCreated](ctx, nil) // env-first; ctx capturado uma vez
-prod.Publish(msg)                 // usa o ctx capturado (timeout por attempt internamente)
-prod.Close()
+prod, _ := kafka.NewProducerWithOptions[orderCreated](ctx, kafka.WithInstrumentation(tel)) // env-first
+prod.PublishContext(ctx, msg)     // span send filho do ctx do chamador (timeout por attempt)
+prod.Shutdown(ctx)
 ```
 
 ### Consumer[T]
@@ -208,9 +209,9 @@ type Ctx struct {
 
 Para publicar **vários tipos** de mensagem pelo mesmo connection:
 ```go
-bus, _ := kafka.New(ctx, opts ...Options) // env-first; ctx capturado uma vez
-bus.Publish(msg)                          // msg: Message
-bus.Close()
+bus, _ := kafka.NewWithOptions(ctx, kafka.WithInstrumentation(tel)) // env-first
+bus.PublishContext(ctx, msg)                                        // msg: Message
+bus.Shutdown(ctx)
 ```
 
 ## Serialização
