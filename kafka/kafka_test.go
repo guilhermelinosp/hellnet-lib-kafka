@@ -178,6 +178,40 @@ func TestBackoffGrows(t *testing.T) {
 	}
 }
 
+func TestMaxRetriesCountsRetriesAfterInitialAttempt(t *testing.T) {
+	attempts := 0
+	reader := &commitTrackingReader{}
+	bus := &Bus{
+		opts:      testOfflineOptions(),
+		dlqWriter: &capturingMessageWriter{},
+	}
+	consumer := &Consumer[orderCreated]{
+		opts:       bus.opts,
+		bus:        bus,
+		client:     reader,
+		serializer: JSONSerializer{},
+		handler: HandlerFunc[orderCreated](func(context.Context, orderCreated, Ctx) error {
+			attempts++
+			if attempts < 3 {
+				return errors.New("transient handler error")
+			}
+			return nil
+		}),
+		maxRetries: 2,
+	}
+
+	err := consumer.processMessage(context.Background(), kgo.Record{
+		Topic: "orders",
+		Value: []byte(`{"orderId":"order-1"}`),
+	})
+	if err != nil {
+		t.Fatalf("processMessage = %v, want nil", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("handler attempts = %d, want 3", attempts)
+	}
+}
+
 // TestFetchBackoffEscalatesAndCaps proves the consume-loop fetch retry delay
 // starts around 200ms, escalates by doubling and stays capped at ~5s (±20%
 // jitter) regardless of how long the failure streak lasts.

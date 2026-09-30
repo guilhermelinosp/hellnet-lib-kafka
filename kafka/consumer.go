@@ -177,7 +177,9 @@ func (c *Consumer[T]) processMessage(ctx context.Context, m kgo.Record) error {
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < c.maxRetries; attempt++ {
+	// MaxRetries is the number of retries after the initial handler attempt.
+	// A value of zero still gives the message one processing attempt.
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 && !c.sleepThroughShutdown(ctx, backoff(c.opts.RetryDelay, attempt-1)) {
 			return nil
 		}

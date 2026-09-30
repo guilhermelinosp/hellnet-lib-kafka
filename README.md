@@ -301,7 +301,7 @@ O subject segue a convenção Confluente `{topic}-value`
 | `KAFKA_SCHEMA_REGISTRY_URL` | — | Obrigatório p/ avro/protobuf |
 | `KAFKA_SCHEMA_REGISTRY_PATH` | `/apis/ccompat/v6` | `none` = raiz (Redpanda/Confluent) |
 | `KAFKA_IDEMPOTENT` | `true` | Producer idempotente |
-| `KAFKA_MAX_RETRIES` | `3` | Total de attempts (handler) |
+| `KAFKA_MAX_RETRIES` | `3` | Retries após a tentativa inicial; total máximo de attempts = `MaxRetries+1` |
 | `KAFKA_RETRY_DELAY_MS` | `200` | Backoff base (exponencial + jitter), inteiro em ms |
 | `KAFKA_TIMEOUT_PRODUCE_MS` | `30000` | Timeout de produce, inteiro em ms |
 | `KAFKA_CIRCUIT_BREAKER_COUNT` | `5` | Falhas antes de abrir o circuit breaker |
