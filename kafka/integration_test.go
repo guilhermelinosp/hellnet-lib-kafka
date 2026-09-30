@@ -220,7 +220,7 @@ func TestIntegrationHandlerRetryThenDLQ(t *testing.T) {
 	})
 	go func() { _ = cons.Run() }()
 
-	prod, err := newProducerWithOptions[evtTest](ctx, integrationBaseOpts(brokers))
+	prod, err := newProducerWithOptions[evtTest](ctx, o)
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
 	}
