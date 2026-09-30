@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/guilhermelinosp/hellnet-lib-kafka/internal/obstest"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -40,7 +40,7 @@ func TestRegistryStandaloneDefaultsToBackground(t *testing.T) {
 }
 
 func TestRegistryRequestIsChildOfActiveOperation(t *testing.T) {
-	h := obstest.New(t)
+	h := telemetry.NewHarness(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/subjects/orders/versions/latest" {
 			t.Fatalf("path = %q", r.URL.Path)
@@ -65,7 +65,7 @@ func TestRegistryRequestIsChildOfActiveOperation(t *testing.T) {
 			break
 		}
 	}
-	if requestSpan == nil || !obstest.ChildOf(h.SpansByName("send orders")[0], requestSpan) {
+	if requestSpan == nil || !telemetry.ChildOf(h.SpansByName("send orders")[0], requestSpan) {
 		t.Fatalf("schema registry span hierarchy = %#v", h.Spans())
 	}
 }
