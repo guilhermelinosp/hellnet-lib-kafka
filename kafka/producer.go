@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
 )
 
 // Producer is a type-safe producer bound to a single message type T — generics
@@ -15,23 +15,11 @@ type Producer[T Message] struct {
 	bus *Bus
 }
 
-// NewProducer follows the zero-config New pattern: it creates the base context,
-// loads .env, and resolves all options from KAFKA_*.
-// NewProducer creates a producer.
-//
-// Deprecated: use NewProducerWithOptions with WithInstrumentation.
-func NewProducer[T Message](ctx context.Context, ops telemetry.Client, options ...Option) (*Producer[T], error) {
-	bus, err := New(ctx, ops, options...)
-	if err != nil {
-		return nil, err
-	}
-	return &Producer[T]{bus: bus}, nil
-}
-
-// NewProducerWithOptions creates a producer from KAFKA_* environment variables.
-// Supply the Hellnet observability contract with WithInstrumentation.
-func NewProducerWithOptions[T Message](ctx context.Context, options ...Option) (*Producer[T], error) {
-	bus, err := NewWithOptions(ctx, options...)
+// NewProducer creates a producer from KAFKA_* environment variables. inst is the
+// Hellnet observability contract (for example a *telemetry.Telemetry, or nil to
+// emit no telemetry).
+func NewProducer[T Message](ctx context.Context, inst instrument.Instrumentation, options ...Option) (*Producer[T], error) {
+	bus, err := New(ctx, inst, options...)
 	if err != nil {
 		return nil, err
 	}

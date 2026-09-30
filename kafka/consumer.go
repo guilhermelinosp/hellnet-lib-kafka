@@ -9,7 +9,6 @@ import (
 
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/messaging"
-	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -35,23 +34,12 @@ type Consumer[T Message] struct {
 	maxRetries int
 }
 
-// NewConsumer creates a consumer with the caller's context and telemetry.
-// Configure must be called before Run to attach the handler and topic/group.
-// NewConsumer creates a consumer.
-//
-// Deprecated: use NewConsumerWithOptions with WithInstrumentation.
-func NewConsumer[T Message](ctx context.Context, ops telemetry.Client, options ...Option) (*Consumer[T], error) {
-	bus, err := New(ctx, ops, options...)
-	if err != nil {
-		return nil, err
-	}
-	return newConsumer[T](bus), nil
-}
-
-// NewConsumerWithOptions creates a consumer from KAFKA_* environment variables.
-// Supply the Hellnet observability contract with WithInstrumentation.
-func NewConsumerWithOptions[T Message](ctx context.Context, options ...Option) (*Consumer[T], error) {
-	bus, err := NewWithOptions(ctx, options...)
+// NewConsumer creates a consumer from KAFKA_* environment variables. inst is the
+// Hellnet observability contract (for example a *telemetry.Telemetry, or nil to
+// emit no telemetry). Configure must be called before Run to attach the handler
+// and topic/group.
+func NewConsumer[T Message](ctx context.Context, inst instrument.Instrumentation, options ...Option) (*Consumer[T], error) {
+	bus, err := New(ctx, inst, options...)
 	if err != nil {
 		return nil, err
 	}

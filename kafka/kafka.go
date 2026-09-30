@@ -24,7 +24,6 @@ import (
 	"github.com/guilhermelinosp/hellnet-lib-kafka/internal/env"
 
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
-	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 )
 
 // kafkaEnv reads a KAFKA_<name> env var, defaulting to def.
@@ -145,16 +144,11 @@ func WithInstrumentation(inst instrument.Instrumentation) Option {
 	return func(o *constructorOptions) { o.inst = inst }
 }
 
-// New creates a bus. The telemetry.Client parameter is retained for compatibility.
-//
-// Deprecated: use NewWithOptions with WithInstrumentation.
-func New(ctx context.Context, ops telemetry.Client, options ...Option) (*Bus, error) {
-	b, err := NewWithOptions(ctx, append([]Option{WithInstrumentation(legacyInstrumentation(ops))}, options...)...)
-	if err != nil {
-		return nil, err
-	}
-	b.ops = ops
-	return b, nil
+// New creates a bus from KAFKA_* environment variables. inst is the Hellnet
+// observability contract (for example a *telemetry.Telemetry, or nil to emit no
+// telemetry); options may refine it.
+func New(ctx context.Context, inst instrument.Instrumentation, options ...Option) (*Bus, error) {
+	return NewWithOptions(ctx, append([]Option{WithInstrumentation(inst)}, options...)...)
 }
 
 // NewWithOptions creates a bus from KAFKA_* environment variables. Supply the
@@ -203,13 +197,6 @@ func NewWithOptions(ctx context.Context, options ...Option) (*Bus, error) {
 	return b, nil
 }
 
-func legacyInstrumentation(ops telemetry.Client) instrument.Instrumentation {
-	if inst, ok := any(ops).(instrument.Instrumentation); ok {
-		return inst
-	}
-	return nil
-}
-
 func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 	if err := o.validate(); err != nil {
 		return nil, err
@@ -223,11 +210,8 @@ func newBusWithOptions(ctx context.Context, o Options) (*Bus, error) {
 }
 
 // MustNew is like New but panics if construction fails.
-// MustNew is like New but panics if construction fails.
-//
-// Deprecated: pass WithInstrumentation to New.
-func MustNew(ctx context.Context, ops telemetry.Client, options ...Option) *Bus {
-	b, err := New(ctx, ops, options...)
+func MustNew(ctx context.Context, inst instrument.Instrumentation, options ...Option) *Bus {
+	b, err := New(ctx, inst, options...)
 	if err != nil {
 		panic(err)
 	}

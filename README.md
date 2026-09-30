@@ -123,8 +123,8 @@ func main() {
 	defer stop()
 
 	// Producer tipado pelo tipo da mensagem (env-first; lê KAFKA_* via .env).
-	// Passe kafka.WithInstrumentation(tel) para ativar traces/métricas/logs.
-	prod, err := kafka.NewProducerWithOptions[orderCreated](ctx)
+	// tel é a instrumentação Hellnet (ex.: *telemetry.Telemetry) ou nil.
+	prod, err := kafka.NewProducer[orderCreated](ctx, tel)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func main() {
 	}
 
 	// Consumer tipado pelo handler (env-first; opts opcionais).
-	cons, err := kafka.NewConsumerWithOptions[orderCreated](ctx)
+	cons, err := kafka.NewConsumer[orderCreated](ctx, tel)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -161,7 +161,7 @@ Use `HandlerSpec.Topic` para sobrescrever.
 ### Producer[T]
 
 ```go
-prod, _ := kafka.NewProducerWithOptions[orderCreated](ctx, kafka.WithInstrumentation(tel)) // env-first
+prod, _ := kafka.NewProducer[orderCreated](ctx, tel) // env-first
 prod.PublishContext(ctx, msg)     // span send filho do ctx do chamador (timeout por attempt)
 prod.Shutdown(ctx)
 ```
@@ -209,7 +209,7 @@ type Ctx struct {
 
 Para publicar **vários tipos** de mensagem pelo mesmo connection:
 ```go
-bus, _ := kafka.NewWithOptions(ctx, kafka.WithInstrumentation(tel)) // env-first
+bus, _ := kafka.New(ctx, tel) // env-first
 bus.PublishContext(ctx, msg)                                        // msg: Message
 bus.Shutdown(ctx)
 ```

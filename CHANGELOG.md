@@ -2,12 +2,13 @@
 
 ## Unreleased
 
-- Added `NewWithOptions`, `NewProducerWithOptions` and `NewConsumerWithOptions`
-  (no `telemetry.Client` argument), `Producer.PublishContext` and
-  `Producer.Shutdown`.
-- Deprecated `New`, `NewProducer`, `NewConsumer`, `Producer.Publish` and
-  `Producer.Close` in favor of the context-first API.
-
+- `New`, `MustNew`, `NewProducer` and `NewConsumer` now take an
+  `instrument.Instrumentation` (for example a `*telemetry.Telemetry`, or nil)
+  instead of the legacy `telemetry.Client` and are no longer deprecated.
+  `NewProducerWithOptions` and `NewConsumerWithOptions` were removed in favor of
+  them; `NewWithOptions`, `Producer.PublishContext` and `Producer.Shutdown` stay.
+- Deprecated `Producer.Publish` and `Producer.Close` in favor of the
+  context-first API.
 - Corrige o teste de integração retry/DLQ para publicar no mesmo tópico isolado
   usado pelo consumer.
 - Define `MaxRetries` como o número de retries após a tentativa inicial; por
