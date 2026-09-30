@@ -104,3 +104,13 @@ func TestNewTakesInstrumentationDirectly(t *testing.T) {
 		t.Fatal("NewProducer must use the supplied instrumentation")
 	}
 }
+
+func TestNewAcceptsTypedNilTelemetry(t *testing.T) {
+	setOfflineEnv(t)
+	var tel *telemetry.Telemetry
+	bus, err := New(context.Background(), tel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = bus.Shutdown(context.Background())
+}

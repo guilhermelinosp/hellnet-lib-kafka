@@ -3,7 +3,7 @@ module github.com/guilhermelinosp/hellnet-lib-kafka
 go 1.27.0
 
 require (
-	github.com/guilhermelinosp/hellnet-lib-telemetry v1.10.0
+	github.com/guilhermelinosp/hellnet-lib-telemetry v1.12.0
 	github.com/iskorotkov/avro/v2 v2.34.0
 	github.com/joho/godotenv v1.5.1
 	github.com/sony/gobreaker v1.0.0
