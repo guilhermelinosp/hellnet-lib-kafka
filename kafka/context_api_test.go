@@ -43,7 +43,7 @@ func TestNewWithOptionsWithoutInstrumentationIsNoop(t *testing.T) {
 func TestProducerAndConsumerWithOptions(t *testing.T) {
 	setOfflineEnv(t)
 	ctx := context.Background()
-	p, err := NewProducerWithOptions[orderCreated](ctx)
+	p, err := NewProducer[orderCreated](ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestProducerAndConsumerWithOptions(t *testing.T) {
 	if err := p.PublishContext(ctx, orderCreated{OrderID: "x"}); err == nil {
 		t.Fatal("PublishContext after Shutdown must fail")
 	}
-	c, err := NewConsumerWithOptions[orderCreated](ctx)
+	c, err := NewConsumer[orderCreated](ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,5 +89,18 @@ func TestProducerPublishContextPropagatesParent(t *testing.T) {
 	cancel()
 	if err := p.Shutdown(canceled); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Shutdown(canceled) = %v, want context canceled", err)
+	}
+}
+
+func TestNewTakesInstrumentationDirectly(t *testing.T) {
+	setOfflineEnv(t)
+	h := telemetry.NewHarness(t)
+	p, err := NewProducer[orderCreated](context.Background(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Shutdown(context.Background()) }()
+	if p.bus.obs.inst != h {
+		t.Fatal("NewProducer must use the supplied instrumentation")
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/messaging"
-	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/sony/gobreaker"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/codes"
@@ -31,7 +30,6 @@ type Bus struct {
 	breaker       *gobreaker.CircuitBreaker
 	serializer    Serializer
 	legacyContext func() context.Context
-	ops           telemetry.Client
 	obs           observability
 }
 
