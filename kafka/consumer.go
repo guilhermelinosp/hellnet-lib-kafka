@@ -119,9 +119,6 @@ func (c *Consumer[T]) RunContext(ctx context.Context) error {
 	if c.client == nil {
 		return fmt.Errorf("kafka: consumer is not configured; call Configure first")
 	}
-	if ctx == nil {
-		return c.runWithoutContext()
-	}
 	return c.run(ctx)
 }
 

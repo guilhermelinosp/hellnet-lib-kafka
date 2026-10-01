@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A `nil` `context.Context` is no longer tolerated: `RunContext(nil)` no longer
+  falls back to a background loop, `PublishContext(nil)` no longer returns an
+  error and `Shutdown(nil)` no longer skips the cancelation check. Callers must
+  pass a real context, as the Go convention requires.
+
 - Added `ContextWithHeaders(ctx, headers)`: `PublishContext` sends the headers
   carried by the context as Kafka record headers (correlation data such as
   `event_id` or `order_id`); trace-context headers stay library-owned.
