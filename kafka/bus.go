@@ -71,9 +71,6 @@ func (b *Bus) Publish(msg Message) error {
 
 // PublishContext serializes and produces msg as a child of ctx.
 func (b *Bus) PublishContext(ctx context.Context, msg Message) error {
-	if ctx == nil {
-		return fmt.Errorf("kafka: publish context is nil")
-	}
 	return b.publishWithContext(ctx, msg)
 }
 
@@ -147,20 +144,13 @@ func (b *Bus) Close() error {
 // Shutdown releases the producer client unless ctx has already been canceled.
 // franz-go's Close is synchronous and has no context-aware variant.
 func (b *Bus) Shutdown(ctx context.Context) error {
-	if err := ctxOrNil(ctx); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if b.client == nil {
 		return nil
 	}
 	b.client.Close()
-	return nil
-}
-
-func ctxOrNil(ctx context.Context) error {
-	if ctx != nil {
-		return ctx.Err()
-	}
 	return nil
 }
 
