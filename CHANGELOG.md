@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added `Options.SchemaSubjectStripPrefix` (`KAFKA_SCHEMA_SUBJECT_STRIP_PREFIX`): the Avro serializer removes this
+  prefix from the topic to get the Schema Registry subject, so topic `br.com.hellnet.fast.order.accepted.v1` uses
+  subject `fast.order.accepted.v1`. Empty keeps the previous behavior (subject = topic).
+
 - A `nil` `context.Context` is no longer tolerated: `RunContext(nil)` no longer
   falls back to a background loop, `PublishContext(nil)` no longer returns an
   error and `Shutdown(nil)` no longer skips the cancelation check. Callers must

@@ -79,6 +79,9 @@ type Options struct {
 	// SchemaRegistryPath is the ccompat API base path: "/apis/ccompat/v6" for
 	// Apicurio, "" (root) for Redpanda/Confluent.
 	SchemaRegistryPath string
+	// SchemaSubjectStripPrefix is removed from the topic name to get the Avro
+	// subject (empty: the subject is the topic name).
+	SchemaSubjectStripPrefix string
 	// DeadLetterTopic overrides the default "{topic}.dlq".
 	DeadLetterTopic string
 	instrumentation instrument.Instrumentation
@@ -121,7 +124,7 @@ func (o *Options) buildSerializer() (Serializer, error) {
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for avro serializer")
 		}
-		return &AvroSerializer{registry: newRegistryClientWithInstrumentation(o.SchemaRegistryURL, o.SchemaRegistryPath, o.instrumentation)}, nil
+		return &AvroSerializer{registry: newRegistryClientWithInstrumentation(o.SchemaRegistryURL, o.SchemaRegistryPath, o.instrumentation), subjectStripPrefix: o.SchemaSubjectStripPrefix}, nil
 	case "protobuf":
 		if o.SchemaRegistryURL == "" {
 			return nil, fmt.Errorf("kafka: KAFKA_SCHEMA_REGISTRY_URL required for protobuf serializer")
@@ -161,24 +164,25 @@ func NewWithOptions(ctx context.Context, options ...Option) (*Bus, error) {
 	_ = env.Environment()
 
 	o := Options{
-		Brokers:               splitBrokers(kafkaEnv("BROKERS", "")),
-		ConsumerGroup:         kafkaEnv("CONSUMER_GROUP", ""),
-		TopicPrefix:           kafkaEnv("TOPIC_PREFIX", ""),
-		SecurityProtocol:      kafkaEnv("SECURITY_PROTOCOL", "sasl_ssl"),
-		SASLMechanism:         kafkaEnv("SASL_MECHANISM", "SCRAM-SHA-512"),
-		SASLUsername:          kafkaEnv("SASL_USERNAME", "hellnet-app"),
-		SASLPassword:          kafkaEnv("SASL_PASSWORD", ""),
-		SSLCA:                 kafkaEnv("SSL_CA_LOCATION", ""),
-		SSLInsecureSkipVerify: kafkaBool("SSL_INSECURE_SKIP_VERIFY", false),
-		Idempotent:            kafkaBool("IDEMPOTENT", true),
-		MaxRetries:            kafkaInt("MAX_RETRIES", 3),
-		RetryDelay:            time.Duration(kafkaInt("RETRY_DELAY_MS", 200)) * time.Millisecond,
-		TimeoutProduce:        time.Duration(kafkaInt("TIMEOUT_PRODUCE_MS", 30000)) * time.Millisecond,
-		CircuitBreakerCount:   kafkaInt("CIRCUIT_BREAKER_COUNT", 5),
-		DeadLetterTopic:       kafkaEnv("DEAD_LETTER_TOPIC", ""),
-		DefaultSerializer:     kafkaEnv("DEFAULT_SERIALIZER", "json"),
-		SchemaRegistryURL:     kafkaEnv("SCHEMA_REGISTRY_URL", ""),
-		SchemaRegistryPath:    kafkaEnv("SCHEMA_REGISTRY_PATH", "/apis/ccompat/v6"),
+		Brokers:                  splitBrokers(kafkaEnv("BROKERS", "")),
+		ConsumerGroup:            kafkaEnv("CONSUMER_GROUP", ""),
+		TopicPrefix:              kafkaEnv("TOPIC_PREFIX", ""),
+		SecurityProtocol:         kafkaEnv("SECURITY_PROTOCOL", "sasl_ssl"),
+		SASLMechanism:            kafkaEnv("SASL_MECHANISM", "SCRAM-SHA-512"),
+		SASLUsername:             kafkaEnv("SASL_USERNAME", "hellnet-app"),
+		SASLPassword:             kafkaEnv("SASL_PASSWORD", ""),
+		SSLCA:                    kafkaEnv("SSL_CA_LOCATION", ""),
+		SSLInsecureSkipVerify:    kafkaBool("SSL_INSECURE_SKIP_VERIFY", false),
+		Idempotent:               kafkaBool("IDEMPOTENT", true),
+		MaxRetries:               kafkaInt("MAX_RETRIES", 3),
+		RetryDelay:               time.Duration(kafkaInt("RETRY_DELAY_MS", 200)) * time.Millisecond,
+		TimeoutProduce:           time.Duration(kafkaInt("TIMEOUT_PRODUCE_MS", 30000)) * time.Millisecond,
+		CircuitBreakerCount:      kafkaInt("CIRCUIT_BREAKER_COUNT", 5),
+		DeadLetterTopic:          kafkaEnv("DEAD_LETTER_TOPIC", ""),
+		DefaultSerializer:        kafkaEnv("DEFAULT_SERIALIZER", "json"),
+		SchemaRegistryURL:        kafkaEnv("SCHEMA_REGISTRY_URL", ""),
+		SchemaRegistryPath:       kafkaEnv("SCHEMA_REGISTRY_PATH", "/apis/ccompat/v6"),
+		SchemaSubjectStripPrefix: kafkaEnv("SCHEMA_SUBJECT_STRIP_PREFIX", ""),
 	}
 	if o.SchemaRegistryPath == "none" || o.SchemaRegistryPath == "/" {
 		o.SchemaRegistryPath = ""
