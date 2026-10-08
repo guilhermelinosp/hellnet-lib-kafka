@@ -233,7 +233,7 @@ bus.Shutdown(ctx)
 
 `KAFKA_DEFAULT_SERIALIZER` seleciona o formato. Para avro/protobuf, o
 `KAFKA_SCHEMA_REGISTRY_URL` é obrigatório e o schema deve estar registrado
-no subject `{topic}-value`.
+no subject `{topic}` (ou o tópico sem o prefixo de `KAFKA_SCHEMA_SUBJECT_STRIP_PREFIX`, ex.: `br.com.hellnet.` → subject `fast.order.accepted.v1`).
 
 ### JSON (default)
 ```bash

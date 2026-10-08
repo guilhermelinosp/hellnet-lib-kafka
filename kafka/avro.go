@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strings"
 
 	"github.com/iskorotkov/avro/v2"
 )
@@ -20,10 +21,18 @@ var avroCodec = avro.Config{
 //
 //	[magic 0x00][schema id: 4 bytes BE][avro payload]
 //
-// The subject is the topic name itself. Structs map to the Avro schema via
-// avro tags (see example/main.go).
+// The subject is the topic name itself, minus subjectStripPrefix when set (for
+// example topic "br.com.hellnet.fast.order.accepted.v1" with prefix
+// "br.com.hellnet." resolves subject "fast.order.accepted.v1"). Structs map to
+// the Avro schema via avro tags (see example/main.go).
 type AvroSerializer struct {
-	registry *registryClient
+	registry           *registryClient
+	subjectStripPrefix string
+}
+
+// subject returns the Schema Registry subject for a topic.
+func (a *AvroSerializer) subject(topic string) string {
+	return strings.TrimPrefix(topic, a.subjectStripPrefix)
 }
 
 // NewAvroSerializer builds an Avro serializer bound to the registry URL.
@@ -46,9 +55,9 @@ func (a *AvroSerializer) SerializeContext(ctx context.Context, topic string, val
 }
 
 func (a *AvroSerializer) serialize(ctx context.Context, topic string, value any) ([]byte, error) {
-	schemaStr, id, err := a.registry.latestSchemaContext(ctx, topic)
+	schemaStr, id, err := a.registry.latestSchemaContext(ctx, a.subject(topic))
 	if err != nil {
-		return nil, fmt.Errorf("kafka: avro schema %s: %w", topic, err)
+		return nil, fmt.Errorf("kafka: avro schema %s: %w", a.subject(topic), err)
 	}
 	codec, err := avro.Parse(schemaStr)
 	if err != nil {
